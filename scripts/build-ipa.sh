@@ -21,9 +21,21 @@ xcodebuild build \
 app="build/DerivedData/Build/Products/Release-iphoneos/CoverflexBudget.app"
 widget="$app/PlugIns/CoverflexBudgetWidget.appex"
 
+# The .entitlements files contain $(APP_GROUP_IDENTIFIER). Xcode replaces it only when it signs,
+# and this build does not sign, so replace it here.
+app_group=$(xcodebuild -project CoverflexBudget.xcodeproj -scheme CoverflexBudget -configuration Release \
+  -showBuildSettings 2>/dev/null | awk -F' = ' '$1 ~ /^ *APP_GROUP_IDENTIFIER$/ { print $2; exit }')
+[[ -n "$app_group" ]] || { echo "Could not read APP_GROUP_IDENTIFIER" >&2; exit 1; }
+mkdir -p build/entitlements
+sign() { # <bundle> <entitlements file>
+  local resolved="build/entitlements/$(basename "$2")"
+  sed "s/\$(APP_GROUP_IDENTIFIER)/$app_group/g" "$2" > "$resolved"
+  codesign --force --sign - --entitlements "$resolved" "$1"
+}
+
 # Sign the extension first: the app signature covers the extension.
-codesign --force --sign - --entitlements Widget/CoverflexBudgetWidget.entitlements "$widget"
-codesign --force --sign - --entitlements App/CoverflexBudget.entitlements "$app"
+sign "$widget" Widget/CoverflexBudgetWidget.entitlements
+sign "$app" App/CoverflexBudget.entitlements
 
 rm -rf build/ipa build/CoverflexBudget.ipa
 mkdir -p build/ipa/Payload

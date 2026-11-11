@@ -130,11 +130,11 @@ import Testing
 
 @Suite struct AppGroupTests {
     @Test func usesDeclaredGroupWithoutAltStore() {
-        #expect(AppGroup.resolve(altStoreAppGroups: nil) == "group.com.gmcabrita.CoverflexBudget")
+        #expect(AppGroup.resolve(declared: "group.com.example.CoverflexBudget", altStoreAppGroups: nil) == "group.com.example.CoverflexBudget")
     }
 
     @Test func usesGroupRenamedByAltStore() {
-        let groups = ["group.com.rileytestut.AltStore.ABCDE12345", "group.com.gmcabrita.CoverflexBudget.ABCDE12345"]
-        #expect(AppGroup.resolve(altStoreAppGroups: groups) == "group.com.gmcabrita.CoverflexBudget.ABCDE12345")
+        let groups = ["group.com.rileytestut.AltStore.ABCDE12345", "group.com.example.CoverflexBudget.ABCDE12345"]
+        #expect(AppGroup.resolve(declared: "group.com.example.CoverflexBudget", altStoreAppGroups: groups) == "group.com.example.CoverflexBudget.ABCDE12345")
     }
 }

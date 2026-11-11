@@ -47,14 +47,26 @@ After design changes, update the README image with `swift scripts/render-widget-
 
 ## Build
 
+Needs [XcodeGen](https://github.com/yonaskolb/XcodeGen) 2.46.0 or later (`project.yml` sets this minimum).
+
 ```sh
 brew install xcodegen
 xcodegen generate
 open CoverflexBudget.xcodeproj
 ```
 
-Signing uses team `5JCZ9B7BDM` (see `project.yml`). Xcode registers the bundle IDs and the
-`group.com.gmcabrita.CoverflexBudget` App Group on the first device build.
+Signing uses team `5JCZ9B7BDM` and the bundle ID prefix `com.gmcabrita`. Xcode registers the bundle IDs
+and the `group.com.gmcabrita.CoverflexBudget` App Group on the first device build.
+
+To build with Xcode on your own Apple developer account, set your team ID and your own prefix when you
+generate the project. Bundle IDs and App Group IDs are unique across all Apple accounts, so you cannot
+register the ones above.
+
+```sh
+IOS_DEVELOPMENT_TEAM=ABCDE12345 IOS_BUNDLE_ID_PREFIX=com.example xcodegen generate
+```
+
+The AltStore route below needs neither variable.
 
 ## Install with AltStore or SideStore
 
@@ -63,6 +75,9 @@ Signing uses team `5JCZ9B7BDM` (see `project.yml`). Xcode registers the bundle I
 ```
 
 Then install `build/CoverflexBudget.ipa` from AltStore ("My Apps" → "+").
+
+This route needs no Apple developer team: the script builds without signing, and AltStore signs
+the app with your Apple ID.
 
 - AltStore renames the App Group to `group.com.gmcabrita.CoverflexBudget.<TEAMID>` and writes the new
   name to `ALTAppGroups` in each `Info.plist`. `AppGroup.identifier` reads that key.

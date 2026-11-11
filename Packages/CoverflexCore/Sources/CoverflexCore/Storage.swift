@@ -3,18 +3,27 @@ import Security
 
 /// App Group shared by the app and the widget extension. Holds the snapshot and is the Keychain access group.
 public enum AppGroup {
-    /// App Group in `project.yml` and the `.entitlements` files.
-    public static let declaredIdentifier = "group.com.gmcabrita.CoverflexBudget"
-
     /// App Group in the signed app.
-    public static let identifier = resolve(altStoreAppGroups: Bundle.main.object(forInfoDictionaryKey: "ALTAppGroups") as? [String])
+    public static let identifier = resolve(
+        declared: declaredIdentifier,
+        altStoreAppGroups: Bundle.main.object(forInfoDictionaryKey: "ALTAppGroups") as? [String]
+    )
+
+    /// App Group in the `.entitlements` files. `project.yml` builds it from `IOS_BUNDLE_ID_PREFIX`
+    /// and writes it to `CoverflexAppGroup` in the `Info.plist` of the app and of the widget.
+    private static var declaredIdentifier: String {
+        guard let declared = Bundle.main.object(forInfoDictionaryKey: "CoverflexAppGroup") as? String else {
+            fatalError("CoverflexAppGroup is missing from Info.plist. Run xcodegen generate.")
+        }
+        return declared
+    }
 
     /// AltStore and SideStore re-sign the app with a free developer account and rename each App Group
     /// to `<declared>.<TEAMID>`. They list the new names under `ALTAppGroups` in the `Info.plist`
     /// of the app and of each extension. Without that key, the app runs with the declared App Group.
-    static func resolve(altStoreAppGroups: [String]?) -> String {
-        let renamed = (altStoreAppGroups ?? []).filter { $0.hasPrefix(declaredIdentifier + ".") }
-        return renamed.min(by: { $0.count < $1.count }) ?? declaredIdentifier
+    static func resolve(declared: String, altStoreAppGroups: [String]?) -> String {
+        let renamed = (altStoreAppGroups ?? []).filter { $0.hasPrefix(declared + ".") }
+        return renamed.min(by: { $0.count < $1.count }) ?? declared
     }
 }
 
@@ -37,6 +46,8 @@ public protocol SnapshotStore: Sendable {
 /// Keeps one value as JSON in the Keychain. The App Group identifier is the access group,
 /// so the app and the widget extension read the same item.
 public struct KeychainStore<Value: Codable & Sendable>: SecureStore {
+    // Only a label inside this app's access group, so it does not depend on BUNDLE_ID_PREFIX.
+    // Changing it would hide the sessions that are already saved.
     private let service = "com.gmcabrita.CoverflexBudget"
     private let account: String
     private let accessGroup: String?
