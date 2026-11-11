@@ -62,14 +62,15 @@ struct MealBudgetWidgetView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     // Sizes and colors measured from the Revolut small widget on an iPhone screenshot.
-    // Fonts: a pixel fit of each text run against Inter renders (exact bounding box, zero tracking).
+    // Fonts: a pixel fit of each text run against Inter renders, then a direct comparison of the
+    // glyphs that both widgets show (",", "2", "€") on one phone screenshot.
     // Fixed font sizes: Dynamic Type would push the amount or the buttons out of the widget.
     private enum Layout {
         static let padding: CGFloat = 16
         static let headerFont = Font.inter(size: 14, weight: 500)
         static let badgeSize: CGFloat = 20
-        static let wholeFont = Font.inter(size: 23.75, weight: 650)
-        static let restFont = Font.inter(size: 15.75, weight: 400)
+        static let wholeFont = Font.inter(size: 24, weight: 700)
+        static let restFont = Font.inter(size: 16, weight: 500)
         static let smallFont = Font.inter(size: 12, weight: 500)
         static let buttonSize: CGFloat = 48
         static let buttonIconSize: CGFloat = 19
