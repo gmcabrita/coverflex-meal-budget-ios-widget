@@ -32,6 +32,11 @@ flowchart LR
   View -->|tap, sign-in needed| App2[coverflexbudget://sign-in → sign-in form]
 ```
 
+## Widget design
+
+The widget layout copies the Revolut balance widget. See [docs/widget-design.md](docs/widget-design.md)
+for the measured values and `scripts/compare-widget.swift`, which measures widgets in a screenshot.
+
 ## Build
 
 ```sh
