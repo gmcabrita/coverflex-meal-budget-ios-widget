@@ -19,6 +19,13 @@ public enum CoverflexError: Error, Equatable, Sendable, LocalizedError {
         }
     }
 
+    /// True when Coverflex refused the token or the credentials. Other 4xx codes (404, 408, 429, ...)
+    /// do not prove that, so the app keeps the session and tries again later.
+    var isRejection: Bool {
+        if case let .http(status, _) = self { return [400, 401, 403, 422].contains(status) }
+        return false
+    }
+
     /// True when the server rejected the credentials or token.
     var isUnauthorized: Bool {
         if case let .http(status, _) = self { return status == 401 || status == 403 }
@@ -55,11 +62,13 @@ public struct CoverflexAPI: Sendable {
         self.transport = transport
     }
 
-    /// First sign-in step. Without a trusted device, Coverflex sends an OTP and does not return tokens.
-    public func signIn(email: String, password: String) async throws(CoverflexError) -> SignInResult {
-        let request = makeRequest("employee/sessions", method: "POST", body: ["email": email, "password": password])
+    /// First sign-in step. With a trusted `userAgentToken`, Coverflex returns tokens at once.
+    /// Without one, Coverflex sends an OTP and does not return tokens.
+    public func signIn(email: String, password: String, userAgentToken: String?) async throws(CoverflexError) -> SignInResult {
+        var body = ["email": email, "password": password]
+        body["user_agent_token"] = userAgentToken
         do {
-            return .signedIn(try await decode(AuthTokens.self, from: request))
+            return .signedIn(try await decode(AuthTokens.self, from: makeRequest("employee/sessions", method: "POST", body: body)))
         } catch .network(let message) {
             throw .network(message)
         } catch {
@@ -74,9 +83,38 @@ public struct CoverflexAPI: Sendable {
         return try await decode(AuthTokens.self, from: makeRequest("employee/sessions", method: "POST", body: body))
     }
 
+    /// Login without OTP, as `loginWithCredentials` in `run-gmc/src/coverflex/util`.
+    /// Returns `.otpRequired` when Coverflex answers 2xx with a JSON object without tokens:
+    /// it no longer trusts the user agent token and wants an OTP code.
+    public func logIn(_ credentials: Credentials) async throws(CoverflexError) -> SignInResult {
+        let body = [
+            "email": credentials.email,
+            "password": credentials.password,
+            "user_agent_token": credentials.userAgentToken,
+        ]
+        let data = try await send(makeRequest("employee/sessions", method: "POST", body: body))
+        if let tokens = try? JSONDecoder().decode(AuthTokens.self, from: data) { return .signedIn(tokens) }
+        if (try? JSONSerialization.jsonObject(with: data)) is [String: Any] { return .otpRequired }
+        throw .unexpectedResponse(String(decoding: data.prefix(200), as: UTF8.self))
+    }
+
+    /// Marks this client as trusted and returns the token that lets later logins skip the OTP.
+    public func trustUserAgent(accessToken: String) async throws(CoverflexError) -> String {
+        struct Response: Decodable {
+            let userAgentToken: String
+            enum CodingKeys: String, CodingKey { case userAgentToken = "user_agent_token" }
+        }
+        var request = makeRequest("employee/sessions/trust-user-agent", method: "POST", bearer: accessToken)
+        // Same header as bin/coverflex-uat.ts, without a body.
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        return try await decode(Response.self, from: request).userAgentToken
+    }
+
     /// Exchanges a refresh token for a new access token and a new refresh token.
     public func renew(refreshToken: String) async throws(CoverflexError) -> AuthTokens {
-        let request = makeRequest("employee/sessions/renew", method: "POST", bearer: refreshToken)
+        var request = makeRequest("employee/sessions/renew", method: "POST", bearer: refreshToken)
+        // The web app sends this header without a body. Same as run-gmc/src/coverflex/util.
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         return try await decode(AuthTokens.self, from: request)
     }
 
@@ -115,6 +153,16 @@ public struct CoverflexAPI: Sendable {
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from request: URLRequest) async throws(CoverflexError) -> T {
+        let data = try await send(request)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw .unexpectedResponse(String(describing: error))
+        }
+    }
+
+    /// Sends the request and returns the body of a 2xx response.
+    private func send(_ request: URLRequest) async throws(CoverflexError) -> Data {
         let data: Data
         let response: URLResponse
         do {
@@ -130,10 +178,6 @@ public struct CoverflexAPI: Sendable {
             let body = String(decoding: data.prefix(500), as: UTF8.self)
             throw .http(status: http.statusCode, body: body)
         }
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            throw .unexpectedResponse(String(describing: error))
-        }
+        return data
     }
 }

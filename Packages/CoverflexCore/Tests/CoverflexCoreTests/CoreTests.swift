@@ -7,7 +7,7 @@ import Testing
 
     @Test func firstStepWithoutTokensAsksForOTP() async throws {
         let transport = FakeTransport(["POST /api/employee/sessions": [FakeResponse(status: 422, json: #"{"error":"otp"}"#)]])
-        let result = try await CoverflexAPI(transport: transport).signIn(email: "e@x.pt", password: "pw")
+        let result = try await CoverflexAPI(transport: transport).signIn(email: "e@x.pt", password: "pw", userAgentToken: nil)
 
         #expect(result == .otpRequired)
         let body = try JSONDecoder().decode([String: String].self, from: transport.requests.get()[0].httpBody!)
@@ -16,7 +16,7 @@ import Testing
 
     @Test func firstStepWithTokensSignsIn() async throws {
         let transport = FakeTransport(["POST /api/employee/sessions": [FakeResponse(status: 200, json: tokensJSON)]])
-        let result = try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p")
+        let result = try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p", userAgentToken: nil)
         #expect(result == .signedIn(AuthTokens(token: "a", refreshToken: "r")))
     }
 
@@ -24,7 +24,7 @@ import Testing
         let transport = FakeTransport([:])
         transport.offline = true
         await #expect(throws: CoverflexError.self) {
-            try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p")
+            try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p", userAgentToken: nil)
         }
     }
 

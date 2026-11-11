@@ -50,12 +50,12 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
     }
 }
 
-final class MemoryTokenStore: TokenStore, @unchecked Sendable {
-    let tokens: Locked<AuthTokens?>
-    init(_ tokens: AuthTokens?) { self.tokens = Locked(tokens) }
-    func load() -> AuthTokens? { tokens.get() }
-    func save(_ tokens: AuthTokens) { self.tokens.set(tokens) }
-    func clear() { tokens.set(nil) }
+final class MemoryStore<Value: Sendable>: SecureStore, @unchecked Sendable {
+    let value: Locked<Value?>
+    init(_ value: Value?) { self.value = Locked(value) }
+    func load() -> Value? { value.get() }
+    func save(_ value: Value) { self.value.set(value) }
+    func clear() { value.set(nil) }
 }
 
 final class MemorySnapshotStore: SnapshotStore, @unchecked Sendable {
@@ -76,13 +76,15 @@ func makeJWT(exp: Date) -> String {
     return "\(encode(#"{"alg":"none"}"#)).\(encode("{\"exp\":\(Int(exp.timeIntervalSince1970))}")).sig"
 }
 
-/// Holds requests until the test releases them, so tests can act while a request is in flight.
+/// Holds requests until the test calls `releaseAll()`, so tests can act while a request is in flight.
+/// After the first release, later requests pass without waiting, so a test cannot hang.
 final class GatedTransport: HTTPTransport, @unchecked Sendable {
     let inner: FakeTransport
     /// Yields once per request that reached the transport.
     let arrivals: AsyncStream<Void>
     private let arrivalsContinuation: AsyncStream<Void>.Continuation
     private let releases: Locked<[CheckedContinuation<Void, Never>]> = Locked([])
+    private let isOpen = Locked(false)
 
     init(_ inner: FakeTransport) {
         self.inner = inner
@@ -90,14 +92,17 @@ final class GatedTransport: HTTPTransport, @unchecked Sendable {
     }
 
     func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
-        await withCheckedContinuation { continuation in
-            releases.update { $0.append(continuation) }
-            arrivalsContinuation.yield()
+        if !isOpen.get() {
+            await withCheckedContinuation { continuation in
+                releases.update { $0.append(continuation) }
+                arrivalsContinuation.yield()
+            }
         }
         return try await inner.send(request)
     }
 
     func releaseAll() {
+        isOpen.set(true)
         var pending: [CheckedContinuation<Void, Never>] = []
         releases.update { pending = $0; $0 = [] }
         pending.forEach { $0.resume() }

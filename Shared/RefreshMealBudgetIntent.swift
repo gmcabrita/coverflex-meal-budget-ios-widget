@@ -19,8 +19,8 @@ struct RefreshMealBudgetIntent: AppIntent {
         WidgetCenter.shared.reloadAllTimelines()
 
         switch snapshot.problem {
-        case .signInRequired:
-            throw RefreshMealBudgetError.signInRequired
+        case let .signInRequired(reason):
+            throw RefreshMealBudgetError.signInRequired(reason)
         case let .fetchFailed(message):
             throw RefreshMealBudgetError.fetchFailed(message)
         case nil:
@@ -34,12 +34,12 @@ struct RefreshMealBudgetIntent: AppIntent {
 }
 
 enum RefreshMealBudgetError: Error, CustomLocalizedStringResourceConvertible {
-    case signInRequired
+    case signInRequired(String)
     case fetchFailed(String)
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
-        case .signInRequired: "Coverflex session expired. Open Coverflex Budget and sign in again."
+        case let .signInRequired(reason): "Coverflex session expired. Open Coverflex Budget and sign in again. \(reason)"
         case let .fetchFailed(message): "Could not refresh the meal budget: \(message)"
         }
     }

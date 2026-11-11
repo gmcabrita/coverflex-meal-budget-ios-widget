@@ -4,7 +4,9 @@ import SwiftUI
 /// Two-step Coverflex sign-in, as in `run-gmc/bin/coverflex-uat.ts`:
 /// 1. Email and password. Coverflex sends an OTP code and returns no tokens.
 /// 2. Same request with the OTP code. Coverflex returns the access and refresh tokens.
-/// The password stays in memory only. The app stores the tokens, never the password.
+/// `BudgetService` then trusts this client and stores the email, password, and user agent token
+/// in the Keychain, so later logins need no OTP code.
+/// Step 1 skips the OTP when a user agent token for the same email is already stored.
 struct SignInView: View {
     let model: AppModel
 
@@ -19,14 +21,14 @@ struct SignInView: View {
     @State private var errorMessage: String?
     @FocusState private var focus: Field?
 
-    private let api = CoverflexAPI()
-
     var body: some View {
         Form {
-            if model.snapshot.needsSignIn && model.snapshot.balanceCents != nil {
+            if case let .signInRequired(reason) = model.snapshot.problem, model.snapshot.balanceCents != nil {
                 Section {
                     Label("Your Coverflex session expired. Sign in again to update the widget.", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
+                } footer: {
+                    Text(reason)
                 }
             }
 
@@ -92,7 +94,7 @@ struct SignInView: View {
                     .disabled(isWorking)
                 }
 
-                if model.isSignInPresented && model.hasTokens && !model.snapshot.needsSignIn {
+                if model.isSignInPresented && model.hasSession && !model.snapshot.needsSignIn {
                     Button("Cancel", role: .cancel) { model.isSignInPresented = false }
                 }
             }
@@ -114,10 +116,9 @@ struct SignInView: View {
         defer { isWorking = false }
 
         do {
-            switch try await api.signIn(email: email.trimmingCharacters(in: .whitespaces), password: password) {
-            case let .signedIn(tokens):
-                await finish(with: tokens)
-            case .otpRequired:
+            if try await model.startSignIn(email: email.trimmingCharacters(in: .whitespaces), password: password) {
+                resetForm()
+            } else {
                 step = .otp
                 focus = .otp
             }
@@ -133,25 +134,20 @@ struct SignInView: View {
         defer { isWorking = false }
 
         do {
-            let tokens = try await api.signIn(
+            try await model.finishSignIn(
                 email: email.trimmingCharacters(in: .whitespaces),
                 password: password,
                 otp: otp.trimmingCharacters(in: .whitespaces)
             )
-            await finish(with: tokens)
+            resetForm()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func finish(with tokens: AuthTokens) async {
-        do {
-            try await model.completeSignIn(with: tokens)
-            password = ""
-            otp = ""
-            step = .credentials
-        } catch {
-            errorMessage = "Could not save the Coverflex session: \(error.localizedDescription)"
-        }
+    private func resetForm() {
+        password = ""
+        otp = ""
+        step = .credentials
     }
 }

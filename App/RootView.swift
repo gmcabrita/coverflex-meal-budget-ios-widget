@@ -65,6 +65,11 @@ struct BudgetView: View {
                 .disabled(model.isRefreshing)
             }
 
+            Section("Session") {
+                LabeledContent("Access token expires", value: Self.label(model.accessTokenExpiry))
+                LabeledContent("Refresh token expires", value: Self.label(model.refreshTokenExpiry))
+            }
+
             Section {
                 Button("Sign Out", role: .destructive) {
                     Task { await model.signOut() }
@@ -74,5 +79,9 @@ struct BudgetView: View {
             }
         }
         .refreshable { await model.refresh() }
+    }
+
+    private static func label(_ date: Date?) -> String {
+        date?.formatted(date: .abbreviated, time: .shortened) ?? "Unknown"
     }
 }

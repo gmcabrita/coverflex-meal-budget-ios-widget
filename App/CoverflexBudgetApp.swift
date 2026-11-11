@@ -51,29 +51,47 @@ struct CoverflexBudgetShortcuts: AppShortcutsProvider {
 @Observable
 final class AppModel {
     var snapshot = BudgetSnapshot()
-    var hasTokens = false
+    var hasSession = false
+    var accessTokenExpiry: Date?
+    var refreshTokenExpiry: Date?
     var isRefreshing = false
-    /// Set by the widget sign-in link. Shows the form even when tokens are present.
+    /// Set by the widget sign-in link. Shows the form even when a session is present.
     var isSignInPresented = false
 
-    var showsSignIn: Bool { !hasTokens || snapshot.needsSignIn || isSignInPresented }
+    var showsSignIn: Bool { !hasSession || snapshot.needsSignIn || isSignInPresented }
 
     func load() async {
         snapshot = await BudgetService.shared.snapshot
-        hasTokens = await BudgetService.shared.hasTokens
+        await loadTokenState()
+    }
+
+    private func loadTokenState() async {
+        hasSession = await BudgetService.shared.hasSession
+        (accessTokenExpiry, refreshTokenExpiry) = await BudgetService.shared.tokenExpiry
     }
 
     func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
         snapshot = await BudgetService.shared.refresh()
-        hasTokens = await BudgetService.shared.hasTokens
+        await loadTokenState()
         WidgetCenter.shared.reloadAllTimelines()
     }
 
-    func completeSignIn(with tokens: AuthTokens) async throws {
-        snapshot = try await BudgetService.shared.completeSignIn(with: tokens)
-        hasTokens = await BudgetService.shared.hasTokens
+    /// Returns false when Coverflex sent an OTP code. Continue with `finishSignIn`.
+    func startSignIn(email: String, password: String) async throws -> Bool {
+        guard try await BudgetService.shared.startSignIn(email: email, password: password) else { return false }
+        await didSignIn()
+        return true
+    }
+
+    func finishSignIn(email: String, password: String, otp: String) async throws {
+        try await BudgetService.shared.finishSignIn(email: email, password: password, otp: otp)
+        await didSignIn()
+    }
+
+    private func didSignIn() async {
+        await load()
         isSignInPresented = false
         WidgetCenter.shared.reloadAllTimelines()
     }

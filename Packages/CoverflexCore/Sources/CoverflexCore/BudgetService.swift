@@ -1,11 +1,20 @@
 import Foundation
 
-/// Fetches the meal budget, renews tokens when needed, and records the result in the snapshot store.
+/// Signs in, fetches the meal budget, keeps the Coverflex session alive, and records the result
+/// in the snapshot store.
+///
+/// Access token order, as `getAuthenticationToken` in `run-gmc/src/coverflex/util`:
+/// 1. Stored access token, while it is valid.
+/// 2. Renew with the stored refresh token.
+/// 3. When Coverflex rejects the refresh token (or it expired), log in with the stored email,
+///    password, and user agent token. This needs no OTP code.
+/// Only when step 3 is rejected does the user have to sign in again in the app.
+/// Temporary failures (network, 5xx, 429, ...) keep everything for the next attempt.
 ///
 /// The app, the widget timeline, and the refresh App Intent all go through this type.
-/// Concurrent `refresh()` calls in one process share one fetch, so they do not both
-/// spend the same refresh token. The app and the widget extension are separate processes;
-/// `renew` handles the case where the other process renewed first.
+/// Concurrent `refresh()` calls in one process share one fetch, so they do not both spend
+/// the same refresh token. The app and the widget extension are separate processes:
+/// writes check `StoredSession.id`, so a refresh never undoes a sign-out or a new sign-in.
 public actor BudgetService {
     /// Instance used by the app and the widget extension.
     public static let shared = BudgetService()
@@ -14,46 +23,78 @@ public actor BudgetService {
     static let accessTokenExpiryMargin: TimeInterval = 60
 
     private let api: CoverflexAPI
-    private let tokens: any TokenStore
+    private let sessions: any SecureStore<StoredSession>
     private let snapshots: any SnapshotStore
     private let now: @Sendable () -> Date
 
     /// The refresh in progress. Later callers wait for it.
     private var inFlight: Task<BudgetSnapshot, Never>?
-    /// Changes on sign-in and sign-out. A refresh started in an earlier session does not save its result.
-    private var session = 0
 
     public init(
         api: CoverflexAPI = CoverflexAPI(),
-        tokens: any TokenStore = KeychainTokenStore(),
+        sessions: any SecureStore<StoredSession> = KeychainStore.session,
         snapshots: any SnapshotStore = AppGroupSnapshotStore(),
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.api = api
-        self.tokens = tokens
+        self.sessions = sessions
         self.snapshots = snapshots
         self.now = now
     }
 
     public var snapshot: BudgetSnapshot { snapshots.load() }
 
-    public var hasTokens: Bool { tokens.load() != nil }
+    /// True when a refresh can run without user input.
+    public var hasSession: Bool { sessions.load() != nil }
 
-    /// Stores the tokens from a completed sign-in and fetches the budget.
-    /// Throws when the Keychain does not accept the tokens.
-    @discardableResult
-    public func completeSignIn(with newTokens: AuthTokens) async throws -> BudgetSnapshot {
-        startNewSession()
-        try tokens.save(newTokens)
-        return await refresh()
+    /// Expiry dates read from the stored tokens, for display in the app. Nil when unknown.
+    public var tokenExpiry: (access: Date?, refresh: Date?) {
+        guard let tokens = sessions.load()?.tokens else { return (nil, nil) }
+        return (JWT.expirationDate(of: tokens.token), JWT.expirationDate(of: tokens.refreshToken))
     }
 
-    /// Removes the tokens and the cached budget.
+    // MARK: - Sign-in
+
+    /// First sign-in step. Returns false when Coverflex sent an OTP code; continue with `finishSignIn`.
+    /// Returns true when the stored user agent token for this email let Coverflex skip the OTP.
+    public func startSignIn(email: String, password: String) async throws -> Bool {
+        let trustedToken = sessions.load().flatMap { $0.credentials.email == email ? $0.credentials.userAgentToken : nil }
+        switch try await api.signIn(email: email, password: password, userAgentToken: trustedToken) {
+        case let .signedIn(tokens):
+            let userAgentToken: String
+            if let trustedToken {
+                userAgentToken = trustedToken
+            } else {
+                userAgentToken = try await api.trustUserAgent(accessToken: tokens.token)
+            }
+            try await store(Credentials(email: email, password: password, userAgentToken: userAgentToken), tokens)
+            return true
+        case .otpRequired:
+            return false
+        }
+    }
+
+    /// Second sign-in step: sends the OTP code, then trusts this client so later logins need no code.
+    public func finishSignIn(email: String, password: String, otp: String) async throws {
+        let tokens = try await api.signIn(email: email, password: password, otp: otp)
+        let userAgentToken = try await api.trustUserAgent(accessToken: tokens.token)
+        try await store(Credentials(email: email, password: password, userAgentToken: userAgentToken), tokens)
+    }
+
+    private func store(_ credentials: Credentials, _ tokens: AuthTokens) async throws {
+        inFlight = nil
+        try sessions.save(StoredSession(credentials: credentials, tokens: tokens))
+        await refresh()
+    }
+
+    /// Removes the session and the cached budget.
     public func signOut() {
-        startNewSession()
-        tokens.clear()
-        snapshots.save(BudgetSnapshot(problem: .signInRequired))
+        inFlight = nil
+        sessions.clear()
+        snapshots.save(BudgetSnapshot(problem: .signInRequired("Signed out.")))
     }
+
+    // MARK: - Refresh
 
     /// Returns the stored snapshot when it is newer than `maxAge`. Otherwise refreshes.
     /// The widget timeline uses this to skip a second fetch right after the refresh button ran.
@@ -71,96 +112,122 @@ public actor BudgetService {
     public func refresh() async -> BudgetSnapshot {
         if let inFlight { return await inFlight.value }
 
-        let session = self.session
-        let task = Task { await self.performRefresh(in: session) }
+        let task = Task { await self.performRefresh() }
         inFlight = task
         let result = await task.value
         if inFlight == task { inFlight = nil }
         return result
     }
 
-    private func startNewSession() {
-        session += 1
-        inFlight = nil
-    }
+    private func performRefresh() async -> BudgetSnapshot {
+        guard let session = sessions.load() else {
+            var snapshot = snapshots.load()
+            snapshot.problem = .signInRequired("No saved Coverflex session.")
+            snapshots.save(snapshot)
+            return snapshot
+        }
 
-    private func performRefresh(in session: Int) async -> BudgetSnapshot {
         var snapshot = snapshots.load()
         do {
-            snapshot.balanceCents = try await fetchBalanceCents(in: session)
+            snapshot.balanceCents = try await fetchBalanceCents(session)
             snapshot.fetchedAt = now()
             snapshot.problem = nil
         } catch let problem {
             snapshot.problem = problem
         }
-        guard session == self.session else { return snapshots.load() }
+        // A sign-out or a new sign-in (in any process) replaced the session: drop this result.
+        // `.signInRequired` here means this refresh removed its own rejected session, so it is saved.
+        guard sessions.load()?.id == session.id || snapshot.needsSignIn else { return snapshots.load() }
         snapshots.save(snapshot)
         return snapshot
     }
 
-    private func fetchBalanceCents(in session: Int) async throws(BudgetProblem) -> Int {
-        guard let stored = tokens.load() else { throw .signInRequired }
+    private func fetchBalanceCents(_ session: StoredSession) async throws(BudgetProblem) -> Int {
+        if !JWT.isExpired(session.tokens.token, now: now(), margin: Self.accessTokenExpiryMargin) {
+            do {
+                return try await api.mealBalanceCents(accessToken: session.tokens.token)
+            } catch let error where error.isUnauthorized {
+                // Coverflex revoked the access token before its expiry. Get a new one and retry.
+            } catch {
+                throw .fetchFailed(error.localizedDescription)
+            }
+        }
 
-        let tokenWasCached = !JWT.isExpired(stored.token, now: now(), margin: Self.accessTokenExpiryMargin)
-        let accessToken = tokenWasCached ? stored.token : try await renew(stored, in: session)
-
+        let accessToken = try await freshAccessToken(session)
         do {
             return try await api.mealBalanceCents(accessToken: accessToken)
-        } catch let error where error.isUnauthorized && tokenWasCached {
-            // The cached access token was revoked before its expiry. Renew once and retry.
-            let renewed = try await renew(stored, in: session)
+        } catch {
+            throw .fetchFailed(error.localizedDescription)
+        }
+    }
+
+    /// Renews with the refresh token. Logs in with the credentials only when the refresh token is dead.
+    private func freshAccessToken(_ session: StoredSession) async throws(BudgetProblem) -> String {
+        let refreshToken = session.tokens.refreshToken
+        var renewFailure: String
+
+        // Skip the request only when the expiry is known. An unreadable refresh token goes to the server.
+        if let expiry = JWT.expirationDate(of: refreshToken), expiry <= now() {
+            renewFailure = "The refresh token expired at \(expiry.formatted(date: .abbreviated, time: .shortened))."
+        } else {
             do {
-                return try await api.mealBalanceCents(accessToken: renewed)
-            } catch {
-                throw Self.problem(for: error)
-            }
-        } catch {
-            throw Self.problem(for: error)
-        }
-    }
-
-    private func renew(_ stored: AuthTokens, in session: Int) async throws(BudgetProblem) -> String {
-        if JWT.isExpired(stored.refreshToken, now: now(), margin: 0) {
-            clearTokens(ifStill: stored)
-            throw .signInRequired
-        }
-        let renewed: AuthTokens
-        do {
-            renewed = try await api.renew(refreshToken: stored.refreshToken)
-        } catch {
-            guard session == self.session else { throw .fetchFailed("Signed out during refresh") }
-            if error.isUnauthorized {
+                let renewed = try await api.renew(refreshToken: refreshToken)
+                try saveTokens(renewed, for: session)
+                return renewed.token
+            } catch let error as CoverflexError {
                 // The other process may have renewed first and spent this refresh token.
-                // Use its tokens when that happened.
-                if let current = tokens.load(), current != stored,
-                   !JWT.isExpired(current.token, now: now(), margin: Self.accessTokenExpiryMargin) {
-                    return current.token
+                if let current = sessions.load(), current.id == session.id, current.tokens != session.tokens,
+                   !JWT.isExpired(current.tokens.token, now: now(), margin: Self.accessTokenExpiryMargin) {
+                    return current.tokens.token
                 }
-                // Coverflex rejected the refresh token. Only a new sign-in can fix this.
-                clearTokens(ifStill: stored)
-                throw .signInRequired
+                guard error.isRejection else { throw .fetchFailed(error.localizedDescription) }
+                renewFailure = "Renew failed: \(error.localizedDescription)"
+            } catch let problem as BudgetProblem {
+                throw problem
+            } catch {
+                throw .fetchFailed(error.localizedDescription)
             }
-            // Rate limits, server errors, and network errors keep the tokens for the next attempt.
-            throw Self.problem(for: error)
         }
 
-        // A sign-in or sign-out during the request replaced the session. Do not restore old tokens.
-        guard session == self.session else { throw .fetchFailed("Signed out during refresh") }
+        let result: SignInResult
         do {
-            try tokens.save(renewed)
+            result = try await api.logIn(session.credentials)
+        } catch where error.isRejection {
+            // Wrong password or revoked user agent token. Stop retrying: repeated failed
+            // logins can lock the account. Only a new sign-in fixes this.
+            throw clear(session, reason: "\(renewFailure) Login failed: \(error.localizedDescription)")
         } catch {
-            // Coverflex already spent the old refresh token, so the next refresh will likely need a sign-in.
-            throw .fetchFailed("Could not save the renewed Coverflex session: \(error.localizedDescription)")
+            throw .fetchFailed(error.localizedDescription)
         }
-        return renewed.token
+
+        switch result {
+        case let .signedIn(tokens):
+            try saveTokens(tokens, for: session)
+            return tokens.token
+        case .otpRequired:
+            // Each retry could send another OTP code. Only a new sign-in fixes this.
+            throw clear(session, reason: "\(renewFailure) Coverflex asked for a new verification code.")
+        }
     }
 
-    /// Clears the tokens unless another process stored new ones (for example, a sign-in in the app).
-    private func clearTokens(ifStill expected: AuthTokens) {
-        if tokens.load() == expected { tokens.clear() }
+    /// Saves new tokens into the session unless a sign-out or a new sign-in replaced it during the request.
+    private func saveTokens(_ tokens: AuthTokens, for session: StoredSession) throws(BudgetProblem) {
+        guard var current = sessions.load(), current.id == session.id else {
+            throw .fetchFailed("The Coverflex session changed during the refresh.")
+        }
+        current.tokens = tokens
+        do {
+            try sessions.save(current)
+        } catch {
+            throw .fetchFailed("Could not save the Coverflex session: \(error.localizedDescription)")
+        }
     }
 
-    private static func problem(for error: CoverflexError) -> BudgetProblem {
-        error.isUnauthorized ? .signInRequired : .fetchFailed(error.localizedDescription)
+    /// Removes the rejected session and returns `.signInRequired`. When a sign-out or a new sign-in
+    /// replaced the session during the request, leaves the store alone and returns `.fetchFailed`.
+    private func clear(_ session: StoredSession, reason: String) -> BudgetProblem {
+        guard sessions.load()?.id == session.id else { return .fetchFailed("The Coverflex session changed during the refresh.") }
+        sessions.clear()
+        return .signInRequired(reason)
     }
 }

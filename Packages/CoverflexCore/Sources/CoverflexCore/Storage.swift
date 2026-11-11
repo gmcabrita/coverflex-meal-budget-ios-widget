@@ -18,10 +18,11 @@ public enum AppGroup {
     }
 }
 
-/// Stores the Coverflex tokens.
-public protocol TokenStore: Sendable {
-    func load() -> AuthTokens?
-    func save(_ tokens: AuthTokens) throws
+/// Stores one secret value, such as the tokens or the credentials.
+public protocol SecureStore<Value>: Sendable {
+    associatedtype Value
+    func load() -> Value?
+    func save(_ value: Value) throws
     func clear()
 }
 
@@ -31,18 +32,19 @@ public protocol SnapshotStore: Sendable {
     func save(_ snapshot: BudgetSnapshot)
 }
 
-/// Keeps the tokens in the Keychain. The App Group identifier is the access group,
+/// Keeps one value as JSON in the Keychain. The App Group identifier is the access group,
 /// so the app and the widget extension read the same item.
-public struct KeychainTokenStore: TokenStore {
-    private let service = "com.gmcabrita.CoverflexBudget.tokens"
-    private let account = "coverflex"
+public struct KeychainStore<Value: Codable & Sendable>: SecureStore {
+    private let service = "com.gmcabrita.CoverflexBudget"
+    private let account: String
     private let accessGroup: String?
 
-    public init(accessGroup: String? = AppGroup.identifier) {
+    public init(account: String, accessGroup: String? = AppGroup.identifier) {
+        self.account = account
         self.accessGroup = accessGroup
     }
 
-    public func load() -> AuthTokens? {
+    public func load() -> Value? {
         var query = baseQuery()
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -51,11 +53,11 @@ public struct KeychainTokenStore: TokenStore {
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data
         else { return nil }
-        return try? JSONDecoder().decode(AuthTokens.self, from: data)
+        return try? JSONDecoder().decode(Value.self, from: data)
     }
 
-    public func save(_ tokens: AuthTokens) throws {
-        let data = try JSONEncoder().encode(tokens)
+    public func save(_ value: Value) throws {
+        let data = try JSONEncoder().encode(value)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
             // The widget refreshes in the background, also while the device is locked.
@@ -84,6 +86,10 @@ public struct KeychainTokenStore: TokenStore {
         }
         return query
     }
+}
+
+extension KeychainStore where Value == StoredSession {
+    public static var session: Self { Self(account: "session") }
 }
 
 public struct KeychainError: Error, LocalizedError {

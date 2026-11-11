@@ -18,6 +18,8 @@ struct MealBudgetWidget: Widget {
         .configurationDisplayName("Meal Budget")
         .description("Coverflex meal card balance.")
         .supportedFamilies([.systemSmall])
+        // The view sets its own padding to match the Revolut widget layout.
+        .contentMarginsDisabled()
     }
 }
 
@@ -58,31 +60,44 @@ struct MealBudgetProvider: TimelineProvider {
 struct MealBudgetWidgetView: View {
     let snapshot: BudgetSnapshot
 
+    // Sizes measured from the Revolut small widget on an iPhone screenshot.
+    // Fixed font sizes: Dynamic Type would push the amount or the buttons out of the widget.
+    private enum Layout {
+        static let padding: CGFloat = 16
+        static let headerFontSize: CGFloat = 15
+        static let badgeSize: CGFloat = 20
+        static let wholeFontSize: CGFloat = 25
+        static let restFontSize: CGFloat = 17
+        static let buttonSize: CGFloat = 48
+        static let buttonIconSize: CGFloat = 19
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center) {
                 Text("Coverflex")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: Layout.headerFontSize, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(0.56))
                 Spacer(minLength: 4)
                 Image(systemName: "fork.knife")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.background)
-                    .frame(width: 26, height: 26)
+                    .frame(width: Layout.badgeSize, height: Layout.badgeSize)
                     .background(Circle().fill(.primary))
             }
 
             amount
             status
+                .padding(.top, 2)
 
             Spacer(minLength: 0)
 
-            HStack(alignment: .bottom) {
+            HStack(alignment: .center) {
                 Button(intent: RefreshMealBudgetIntent()) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: Layout.buttonIconSize, weight: .semibold))
                         .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+                        .frame(width: Layout.buttonSize, height: Layout.buttonSize)
                         .background(Circle().fill(.fill.tertiary))
                 }
                 .buttonStyle(.plain)
@@ -92,22 +107,27 @@ struct MealBudgetWidgetView: View {
 
                 if let fetchedAt = snapshot.fetchedAt {
                     Text(Self.updatedLabel(fetchedAt))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.primary.opacity(0.4))
                 }
             }
         }
+        .padding(Layout.padding)
         .containerBackground(.background, for: .widget)
         .widgetURL(AppLink.widgetTap(for: snapshot).url)
     }
 
     @ViewBuilder private var amount: some View {
         if let cents = snapshot.balanceCents {
-            AmountText(amount: BudgetFormatting.format(cents: cents), wholeSize: 30, restSize: 20)
-                .foregroundStyle(snapshot.needsSignIn ? .secondary : .primary)
-                .invalidatableContent()
+            AmountText(
+                amount: BudgetFormatting.format(cents: cents),
+                wholeSize: Layout.wholeFontSize,
+                restSize: Layout.restFontSize
+            )
+            .foregroundStyle(snapshot.needsSignIn ? .secondary : .primary)
+            .invalidatableContent()
         } else {
-            Text("—").font(.system(size: 30, weight: .bold))
+            Text("—").font(.system(size: Layout.wholeFontSize, weight: .bold))
         }
     }
 
@@ -115,11 +135,11 @@ struct MealBudgetWidgetView: View {
         switch snapshot.problem {
         case .signInRequired:
             Label("Tap to sign in", systemImage: "person.crop.circle.badge.exclamationmark")
-                .font(.caption.weight(.medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.red)
         case .fetchFailed:
             Label("Update failed", systemImage: "exclamationmark.triangle.fill")
-                .font(.caption.weight(.medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.orange)
         case nil:
             EmptyView()
@@ -139,6 +159,6 @@ struct MealBudgetWidgetView: View {
 } timeline: {
     MealBudgetEntry(date: .now, snapshot: BudgetSnapshot(balanceCents: 12482, fetchedAt: .now))
     MealBudgetEntry(date: .now, snapshot: BudgetSnapshot(balanceCents: 325, fetchedAt: .now, problem: .fetchFailed("Offline")))
-    MealBudgetEntry(date: .now, snapshot: BudgetSnapshot(balanceCents: 325, fetchedAt: .now, problem: .signInRequired))
-    MealBudgetEntry(date: .now, snapshot: BudgetSnapshot(problem: .signInRequired))
+    MealBudgetEntry(date: .now, snapshot: BudgetSnapshot(balanceCents: 325, fetchedAt: .now, problem: .signInRequired("")))
+    MealBudgetEntry(date: .now, snapshot: BudgetSnapshot(problem: .signInRequired("")))
 }
