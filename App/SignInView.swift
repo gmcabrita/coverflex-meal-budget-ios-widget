@@ -1,7 +1,8 @@
 import CoverflexCore
 import SwiftUI
 
-/// Two-step Coverflex sign-in, as in `run-gmc/bin/coverflex-uat.ts`:
+/// Two-step Coverflex sign-in, as in run-gmc
+/// (https://github.com/gmcabrita/run-gmc/blob/49b8808/bin/coverflex-uat.ts):
 /// 1. Email and password. Coverflex sends an OTP code and returns no tokens.
 /// 2. Same request with the OTP code. Coverflex returns the access and refresh tokens.
 /// `BudgetService` then trusts this client and stores the email, password, and user agent token

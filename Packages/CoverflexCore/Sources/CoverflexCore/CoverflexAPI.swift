@@ -52,7 +52,8 @@ public enum SignInResult: Equatable, Sendable {
 }
 
 /// Client for the Coverflex employee API used by https://my.coverflex.com.
-/// Endpoints and headers mirror the web app, as in `run-gmc/src/coverflex`.
+/// Endpoints and headers mirror the web app, as in run-gmc:
+/// https://github.com/gmcabrita/run-gmc/tree/49b8808/src/coverflex
 public struct CoverflexAPI: Sendable {
     public static let baseURL = URL(string: "https://menhir-api.coverflex.com/api")!
 
@@ -83,7 +84,8 @@ public struct CoverflexAPI: Sendable {
         return try await decode(AuthTokens.self, from: makeRequest("employee/sessions", method: "POST", body: body))
     }
 
-    /// Login without OTP, as `loginWithCredentials` in `run-gmc/src/coverflex/util`.
+    /// Login without OTP, as `loginWithCredentials` in run-gmc:
+    /// https://github.com/gmcabrita/run-gmc/tree/49b8808/src/coverflex/util
     /// Returns `.otpRequired` when Coverflex answers 2xx with a JSON object without tokens:
     /// it no longer trusts the user agent token and wants an OTP code.
     public func logIn(_ credentials: Credentials) async throws(CoverflexError) -> SignInResult {
@@ -105,7 +107,7 @@ public struct CoverflexAPI: Sendable {
             enum CodingKeys: String, CodingKey { case userAgentToken = "user_agent_token" }
         }
         var request = makeRequest("employee/sessions/trust-user-agent", method: "POST", bearer: accessToken)
-        // Same header as bin/coverflex-uat.ts, without a body.
+        // Same header as run-gmc, without a body: https://github.com/gmcabrita/run-gmc/blob/49b8808/bin/coverflex-uat.ts
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         return try await decode(Response.self, from: request).userAgentToken
     }
@@ -113,7 +115,7 @@ public struct CoverflexAPI: Sendable {
     /// Exchanges a refresh token for a new access token and a new refresh token.
     public func renew(refreshToken: String) async throws(CoverflexError) -> AuthTokens {
         var request = makeRequest("employee/sessions/renew", method: "POST", bearer: refreshToken)
-        // The web app sends this header without a body. Same as run-gmc/src/coverflex/util.
+        // The web app sends this header without a body. Same as run-gmc: https://github.com/gmcabrita/run-gmc/tree/49b8808/src/coverflex/util
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         return try await decode(AuthTokens.self, from: request)
     }

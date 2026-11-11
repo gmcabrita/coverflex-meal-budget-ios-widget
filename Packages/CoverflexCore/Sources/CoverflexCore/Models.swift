@@ -17,7 +17,8 @@ public struct AuthTokens: Codable, Equatable, Sendable {
     }
 }
 
-/// What the app needs to log in again without an OTP code, as `run-gmc/src/coverflex/util` does.
+/// What the app needs to log in again without an OTP code, as run-gmc does:
+/// https://github.com/gmcabrita/run-gmc/tree/49b8808/src/coverflex/util
 /// `userAgentToken` comes from `POST /employee/sessions/trust-user-agent` after an OTP sign-in.
 /// Coverflex skips the OTP for logins that include it.
 public struct Credentials: Codable, Equatable, Sendable {

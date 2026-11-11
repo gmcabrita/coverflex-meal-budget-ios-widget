@@ -4,9 +4,14 @@
 
 iOS app and Home Screen widget that show the Coverflex meal card balance.
 
+> [!WARNING]
+> This is a personal project, not affiliated with or endorsed by Coverflex. It talks to the same
+> undocumented API that my.coverflex.com uses, so it may break whenever Coverflex changes that API
+> or stops supporting it.
+
 - **App**: sign in with email, password, and OTP code. After the OTP, the app trusts the device
   (`trust-user-agent`) and stores the email, password, user agent token, and session tokens in the Keychain.
-- **Session**: same order as `run-gmc/src/coverflex/util`: stored access token, then renew with the refresh
+- **Session**: same order as [`run-gmc/src/coverflex/util`][run-gmc-util]: stored access token, then renew with the refresh
   token, then login with email, password, and user agent token (no OTP) when Coverflex rejects the refresh
   token. Sign-in in the app is necessary only when Coverflex rejects that login. Temporary errors keep the session.
 - **Widget** (small): balance, refresh button, last update time.
@@ -71,3 +76,20 @@ Shared logic lives in `Packages/CoverflexCore` and runs on macOS:
 ```sh
 cd Packages/CoverflexCore && swift test
 ```
+
+CI runs these tests on each push and pull request (`.github/workflows/test.yml`).
+
+## Related
+
+The session logic follows [run-gmc](https://github.com/gmcabrita/run-gmc), a separate project by the same
+author that uses the same Coverflex API:
+
+- [`src/coverflex/util`][run-gmc-util]: token renewal and login without an OTP code.
+- [`bin/coverflex-uat.ts`][run-gmc-uat]: OTP sign-in and the user agent token.
+
+## License
+
+BSD 3-Clause. See [LICENSE](LICENSE). The Inter font has its own license: `Widget/Fonts/Inter-LICENSE.txt`.
+
+[run-gmc-util]: https://github.com/gmcabrita/run-gmc/tree/49b8808/src/coverflex/util
+[run-gmc-uat]: https://github.com/gmcabrita/run-gmc/blob/49b8808/bin/coverflex-uat.ts

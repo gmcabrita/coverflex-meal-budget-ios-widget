@@ -3,7 +3,8 @@ import Foundation
 /// Signs in, fetches the meal budget, keeps the Coverflex session alive, and records the result
 /// in the snapshot store.
 ///
-/// Access token order, as `getAuthenticationToken` in `run-gmc/src/coverflex/util`:
+/// Access token order, as `getAuthenticationToken` in run-gmc
+/// (https://github.com/gmcabrita/run-gmc/tree/49b8808/src/coverflex/util):
 /// 1. Stored access token, while it is valid.
 /// 2. Renew with the stored refresh token.
 /// 3. When Coverflex rejects the refresh token (or it expired), log in with the stored email,
