@@ -46,11 +46,14 @@ public actor BudgetService {
     public var snapshot: BudgetSnapshot { snapshots.load() }
 
     /// True when a refresh can run without user input.
-    public var hasSession: Bool { sessions.load() != nil }
+    /// A read error does not prove that the session is missing, so it counts as a session.
+    public var hasSession: Bool {
+        do { return try sessions.load() != nil } catch { return true }
+    }
 
     /// Expiry dates read from the stored tokens, for display in the app. Nil when unknown.
     public var tokenExpiry: (access: Date?, refresh: Date?) {
-        guard let tokens = sessions.load()?.tokens else { return (nil, nil) }
+        guard let tokens = currentSession()?.tokens else { return (nil, nil) }
         return (JWT.expirationDate(of: tokens.token), JWT.expirationDate(of: tokens.refreshToken))
     }
 
@@ -59,7 +62,7 @@ public actor BudgetService {
     /// First sign-in step. Returns false when Coverflex sent an OTP code; continue with `finishSignIn`.
     /// Returns true when the stored user agent token for this email let Coverflex skip the OTP.
     public func startSignIn(email: String, password: String) async throws -> Bool {
-        let trustedToken = sessions.load().flatMap { $0.credentials.email == email ? $0.credentials.userAgentToken : nil }
+        let trustedToken = currentSession().flatMap { $0.credentials.email == email ? $0.credentials.userAgentToken : nil }
         switch try await api.signIn(email: email, password: password, userAgentToken: trustedToken) {
         case let .signedIn(tokens):
             let userAgentToken: String
@@ -121,14 +124,23 @@ public actor BudgetService {
     }
 
     private func performRefresh() async -> BudgetSnapshot {
-        guard let session = sessions.load() else {
-            var snapshot = snapshots.load()
-            snapshot.problem = .signInRequired("No saved Coverflex session.")
+        var snapshot = snapshots.load()
+        let session: StoredSession
+        do {
+            guard let stored = try sessions.load() else {
+                snapshot.problem = .signInRequired("No saved Coverflex session.")
+                snapshots.save(snapshot)
+                return snapshot
+            }
+            session = stored
+        } catch {
+            // The session is probably still there (for example, the device was not unlocked
+            // since a restart). Keep it and try again on the next refresh.
+            snapshot.problem = .fetchFailed("Could not read the saved Coverflex session: \(error.localizedDescription)")
             snapshots.save(snapshot)
             return snapshot
         }
 
-        var snapshot = snapshots.load()
         do {
             snapshot.balanceCents = try await fetchBalanceCents(session)
             snapshot.fetchedAt = now()
@@ -138,7 +150,7 @@ public actor BudgetService {
         }
         // A sign-out or a new sign-in (in any process) replaced the session: drop this result.
         // `.signInRequired` here means this refresh removed its own rejected session, so it is saved.
-        guard sessions.load()?.id == session.id || snapshot.needsSignIn else { return snapshots.load() }
+        guard currentSession()?.id == session.id || snapshot.needsSignIn else { return snapshots.load() }
         snapshots.save(snapshot)
         return snapshot
     }
@@ -177,7 +189,7 @@ public actor BudgetService {
                 return renewed.token
             } catch let error as CoverflexError {
                 // The other process may have renewed first and spent this refresh token.
-                if let current = sessions.load(), current.id == session.id, current.tokens != session.tokens,
+                if let current = currentSession(), current.id == session.id, current.tokens != session.tokens,
                    !JWT.isExpired(current.tokens.token, now: now(), margin: Self.accessTokenExpiryMargin) {
                     return current.tokens.token
                 }
@@ -213,7 +225,7 @@ public actor BudgetService {
 
     /// Saves new tokens into the session unless a sign-out or a new sign-in replaced it during the request.
     private func saveTokens(_ tokens: AuthTokens, for session: StoredSession) throws(BudgetProblem) {
-        guard var current = sessions.load(), current.id == session.id else {
+        guard var current = currentSession(), current.id == session.id else {
             throw .fetchFailed("The Coverflex session changed during the refresh.")
         }
         current.tokens = tokens
@@ -224,10 +236,17 @@ public actor BudgetService {
         }
     }
 
+    /// The stored session, or nil when none is stored or the Keychain cannot read it now.
+    /// The checks for a changed session use it: a read error counts as "changed", so a refresh
+    /// never writes over or removes a session that it cannot see.
+    private func currentSession() -> StoredSession? {
+        try? sessions.load()
+    }
+
     /// Removes the rejected session and returns `.signInRequired`. When a sign-out or a new sign-in
     /// replaced the session during the request, leaves the store alone and returns `.fetchFailed`.
     private func clear(_ session: StoredSession, reason: String) -> BudgetProblem {
-        guard sessions.load()?.id == session.id else { return .fetchFailed("The Coverflex session changed during the refresh.") }
+        guard currentSession()?.id == session.id else { return .fetchFailed("The Coverflex session changed during the refresh.") }
         sessions.clear()
         return .signInRequired(reason)
     }

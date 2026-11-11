@@ -60,6 +60,27 @@ import Testing
     }
 }
 
+/// The Keychain keeps `StoredSession` as JSON. A change that cannot read this JSON signs out
+/// every user after an update. Keep this test green: add new fields as optional or with defaults.
+@Suite struct StoredSessionFormatTests {
+    @Test func decodesCurrentFormat() throws {
+        let json = #"""
+        {
+          "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+          "credentials": {"email": "e@x.pt", "password": "pw", "userAgentToken": "uat"},
+          "tokens": {"token": "a", "refresh_token": "r"}
+        }
+        """#
+        let session = try JSONDecoder().decode(StoredSession.self, from: Data(json.utf8))
+
+        #expect(session == StoredSession(
+            id: UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF")!,
+            credentials: Credentials(email: "e@x.pt", password: "pw", userAgentToken: "uat"),
+            tokens: AuthTokens(token: "a", refreshToken: "r")
+        ))
+    }
+}
+
 @Suite struct JWTTests {
     @Test func readsExpiry() {
         let exp = Date(timeIntervalSince1970: 1_900_000_000)

@@ -52,8 +52,13 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
 
 final class MemoryStore<Value: Sendable>: SecureStore, @unchecked Sendable {
     let value: Locked<Value?>
+    /// When set, `load()` throws it, as the Keychain does when it cannot read the item.
+    let readError = Locked<(any Error)?>(nil)
     init(_ value: Value?) { self.value = Locked(value) }
-    func load() -> Value? { value.get() }
+    func load() throws -> Value? {
+        if let error = readError.get() { throw error }
+        return value.get()
+    }
     func save(_ value: Value) { self.value.set(value) }
     func clear() { value.set(nil) }
 }

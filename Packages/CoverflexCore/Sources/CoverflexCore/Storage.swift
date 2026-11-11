@@ -21,7 +21,9 @@ public enum AppGroup {
 /// Stores one secret value, such as the tokens or the credentials.
 public protocol SecureStore<Value>: Sendable {
     associatedtype Value
-    func load() -> Value?
+    /// Nil when no value is stored. Throws when the store cannot read the value or the value
+    /// no longer decodes, so callers can tell "no value" from "value unreadable now".
+    func load() throws -> Value?
     func save(_ value: Value) throws
     func clear()
 }
@@ -44,16 +46,17 @@ public struct KeychainStore<Value: Codable & Sendable>: SecureStore {
         self.accessGroup = accessGroup
     }
 
-    public func load() -> Value? {
+    public func load() throws -> Value? {
         var query = baseQuery()
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data
-        else { return nil }
-        return try? JSONDecoder().decode(Value.self, from: data)
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        // For example errSecInteractionNotAllowed: the widget refreshes before the first unlock after a restart.
+        guard status == errSecSuccess, let data = result as? Data else { throw KeychainError(status: status) }
+        return try JSONDecoder().decode(Value.self, from: data)
     }
 
     public func save(_ value: Value) throws {

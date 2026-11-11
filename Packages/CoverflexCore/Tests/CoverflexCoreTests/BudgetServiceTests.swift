@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import CoverflexCore
 
@@ -87,7 +88,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let renew = transport.requests.get()[0]
         #expect(renew.value(forHTTPHeaderField: "Authorization") == "Bearer \(validRefresh)")
         #expect(renew.value(forHTTPHeaderField: "Content-Type") == "application/json")
-        #expect(sessions.load() == StoredSession(id: session.id, credentials: credentials, tokens: newTokens))
+        #expect(sessions.value.get() == StoredSession(id: session.id, credentials: credentials, tokens: newTokens))
     }
 
     @Test func rejectedRefreshTokenLogsInWithSavedCredentials() async throws {
@@ -105,7 +106,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         #expect(transport.paths() == [renewPath, loginPath, pocketsPath])
         let body = try JSONDecoder().decode([String: String].self, from: transport.requests.get()[1].httpBody!)
         #expect(body == ["email": "e@x.pt", "password": "pw", "user_agent_token": "uat"])
-        #expect(sessions.load()?.tokens == newTokens)
+        #expect(sessions.value.get()?.tokens == newTokens)
     }
 
     @Test func expiredRefreshTokenLogsInWithoutRenewRequest() async {
@@ -138,7 +139,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
 
         expectFetchFailed(await service.refresh())
         #expect(transport.paths() == [renewPath])
-        #expect(sessions.load() == session)
+        #expect(sessions.value.get() == session)
     }
 
     @Test func rejectedLoginRequiresSignInAndKeepsLastBalance() async {
@@ -154,7 +155,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         #expect(snapshot.needsSignIn)
         #expect(snapshot.balanceCents == 1000)
         #expect(snapshot.fetchedAt == previous.fetchedAt)
-        #expect(sessions.load() == nil)
+        #expect(sessions.value.get() == nil)
         #expect(AppLink.widgetTap(for: snapshot) == .signIn)
     }
 
@@ -163,7 +164,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let (service, sessions, _) = makeService(transport, session: makeSession(access: expiredAccess, refresh: expiredRefresh))
 
         #expect(await service.refresh().needsSignIn)
-        #expect(sessions.load() == nil)
+        #expect(sessions.value.get() == nil)
     }
 
     @Test func unreadableLoginResponseKeepsSession() async {
@@ -172,7 +173,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let (service, sessions, _) = makeService(transport, session: session)
 
         expectFetchFailed(await service.refresh())
-        #expect(sessions.load() == session)
+        #expect(sessions.value.get() == session)
     }
 
     @Test func rateLimitedLoginKeepsSession() async {
@@ -181,7 +182,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let (service, sessions, _) = makeService(transport, session: session)
 
         expectFetchFailed(await service.refresh())
-        #expect(sessions.load() == session)
+        #expect(sessions.value.get() == session)
     }
 
     @Test func rejectedRefreshTokenUsesTokensRenewedByOtherProcess() async {
@@ -197,12 +198,27 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
 
         #expect(snapshot.balanceCents == 325)
         #expect(snapshot.problem == nil)
-        #expect(sessions.load()?.tokens == newTokens)
+        #expect(sessions.value.get()?.tokens == newTokens)
     }
 
     @Test func missingSessionRequiresSignIn() async {
         let (service, _, _) = makeService(FakeTransport([:]), session: nil)
         #expect(await service.refresh().needsSignIn)
+    }
+
+    @Test func unreadableSessionKeepsBalanceAndSession() async {
+        let transport = FakeTransport([:])
+        let session = makeSession()
+        let (service, sessions, _) = makeService(transport, session: session, snapshot: BudgetSnapshot(balanceCents: 500, fetchedAt: now))
+        sessions.readError.set(KeychainError(status: errSecInteractionNotAllowed))
+
+        let snapshot = await service.refresh()
+
+        #expect(snapshot.balanceCents == 500)
+        expectFetchFailed(snapshot)
+        #expect(transport.paths().isEmpty)
+        #expect(sessions.value.get() == session)
+        #expect(await service.hasSession)
     }
 
     @Test func networkFailureKeepsBalanceAndSession() async {
@@ -215,7 +231,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
 
         #expect(snapshot.balanceCents == 500)
         expectFetchFailed(snapshot)
-        #expect(sessions.load() == session)
+        #expect(sessions.value.get() == session)
         #expect(AppLink.widgetTap(for: snapshot) == .openCoverflex)
     }
 
@@ -266,7 +282,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let results = await [first, second]
         #expect(results.allSatisfy { $0.balanceCents == 325 && $0.problem == nil })
         #expect(fake.paths() == [renewPath, pocketsPath])
-        #expect(sessions.load()?.tokens == newTokens)
+        #expect(sessions.value.get()?.tokens == newTokens)
     }
 
     @Test func signOutDuringRenewalDoesNotRestoreSession() async {
@@ -284,7 +300,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         transport.releaseAll()
         _ = await pending
 
-        #expect(sessions.load() == nil)
+        #expect(sessions.value.get() == nil)
         #expect(snapshots.load() == BudgetSnapshot(problem: .signInRequired("Signed out.")))
     }
 
@@ -305,7 +321,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         transport.releaseAll()
         _ = await pending
 
-        #expect(sessions.load() == nil)
+        #expect(sessions.value.get() == nil)
         #expect(snapshots.load() == BudgetSnapshot(problem: .signInRequired("Signed out.")))
     }
 
@@ -326,7 +342,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         transport.releaseAll()
         _ = await pending
 
-        #expect(sessions.load() == newer)
+        #expect(sessions.value.get() == newer)
         #expect(!snapshots.load().needsSignIn)
     }
 }
@@ -347,8 +363,8 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let trust = transport.requests.get()[2]
         #expect(trust.value(forHTTPHeaderField: "Authorization") == "Bearer \(newAccess)")
         #expect(trust.value(forHTTPHeaderField: "Content-Type") == "application/x-www-form-urlencoded")
-        #expect(sessions.load()?.credentials == Credentials(email: "e@x.pt", password: "pw", userAgentToken: "new-uat"))
-        #expect(sessions.load()?.tokens == newTokens)
+        #expect(sessions.value.get()?.credentials == Credentials(email: "e@x.pt", password: "pw", userAgentToken: "new-uat"))
+        #expect(sessions.value.get()?.tokens == newTokens)
         #expect(snapshots.load().balanceCents == 325)
     }
 
@@ -364,8 +380,8 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
 
         let body = try JSONDecoder().decode([String: String].self, from: transport.requests.get()[0].httpBody!)
         #expect(body["user_agent_token"] == "uat")
-        #expect(sessions.load()?.credentials == Credentials(email: "e@x.pt", password: "new-pw", userAgentToken: "uat"))
-        #expect(sessions.load()?.id != old.id)
+        #expect(sessions.value.get()?.credentials == Credentials(email: "e@x.pt", password: "new-pw", userAgentToken: "uat"))
+        #expect(sessions.value.get()?.id != old.id)
         #expect(transport.paths() == [loginPath, pocketsPath])
     }
 }
