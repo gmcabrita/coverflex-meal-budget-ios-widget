@@ -271,12 +271,17 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         ])
         let transport = GatedTransport(fake)
         let (service, sessions, _) = makeService(transport, session: makeSession(access: expiredAccess))
+        let (joinStream, joinContinuation) = AsyncStream<Void>.makeStream()
+        await service.observeJoins { joinContinuation.yield() }
+        var joins = joinStream.makeAsyncIterator()
 
         async let first = service.refresh()
         var arrivals = transport.arrivals.makeAsyncIterator()
         _ = await arrivals.next()
         async let second = service.refresh()
-        try? await Task.sleep(for: .milliseconds(20))
+        // Release the renew request only after the second call waits for the first refresh.
+        // Earlier, the second call could start its own refresh.
+        _ = await joins.next()
         transport.releaseAll()
 
         let results = await [first, second]

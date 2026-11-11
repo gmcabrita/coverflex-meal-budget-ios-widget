@@ -31,6 +31,9 @@ public actor BudgetService {
     /// The refresh in progress. Later callers wait for it.
     private var inFlight: Task<BudgetSnapshot, Never>?
 
+    /// Test hook: runs each time a `refresh()` call waits for the refresh in progress.
+    private var onJoinInFlight: (@Sendable () -> Void)?
+
     public init(
         api: CoverflexAPI = CoverflexAPI(),
         sessions: any SecureStore<StoredSession> = KeychainStore.session,
@@ -100,6 +103,11 @@ public actor BudgetService {
 
     // MARK: - Refresh
 
+    /// Lets tests know when a second `refresh()` call joined the refresh in progress.
+    func observeJoins(_ observer: @escaping @Sendable () -> Void) {
+        onJoinInFlight = observer
+    }
+
     /// Returns the stored snapshot when it is newer than `maxAge`. Otherwise refreshes.
     /// The widget timeline uses this to skip a second fetch right after the refresh button ran.
     public func refreshIfOlder(than maxAge: TimeInterval) async -> BudgetSnapshot {
@@ -114,7 +122,10 @@ public actor BudgetService {
     /// A failure keeps the last known balance and records the problem.
     @discardableResult
     public func refresh() async -> BudgetSnapshot {
-        if let inFlight { return await inFlight.value }
+        if let inFlight {
+            onJoinInFlight?()
+            return await inFlight.value
+        }
 
         let task = Task { await self.performRefresh() }
         inFlight = task
