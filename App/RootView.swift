@@ -32,7 +32,11 @@ struct BudgetView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Meal budget").font(.subheadline).foregroundStyle(.secondary)
                     if let cents = model.snapshot.balanceCents {
-                        AmountText(amount: BudgetFormatting.format(cents: cents), wholeSize: 44, restSize: 28)
+                        AmountText(
+                            amount: BudgetFormatting.format(cents: cents),
+                            wholeFont: .system(size: 44, weight: .bold),
+                            restFont: .system(size: 28)
+                        )
                     } else {
                         Text("No data yet").font(.title2.bold())
                     }

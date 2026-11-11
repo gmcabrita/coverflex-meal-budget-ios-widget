@@ -59,15 +59,18 @@ struct MealBudgetProvider: TimelineProvider {
 
 struct MealBudgetWidgetView: View {
     let snapshot: BudgetSnapshot
+    @Environment(\.colorScheme) private var colorScheme
 
-    // Sizes measured from the Revolut small widget on an iPhone screenshot.
+    // Sizes and colors measured from the Revolut small widget on an iPhone screenshot.
+    // Fonts: a pixel fit of each text run against Inter renders (exact bounding box, zero tracking).
     // Fixed font sizes: Dynamic Type would push the amount or the buttons out of the widget.
     private enum Layout {
         static let padding: CGFloat = 16
-        static let headerFontSize: CGFloat = 15
+        static let headerFont = Font.inter(size: 14, weight: 500)
         static let badgeSize: CGFloat = 20
-        static let wholeFontSize: CGFloat = 25
-        static let restFontSize: CGFloat = 17
+        static let wholeFont = Font.inter(size: 23.75, weight: 650)
+        static let restFont = Font.inter(size: 15.75, weight: 400)
+        static let smallFont = Font.inter(size: 12, weight: 500)
         static let buttonSize: CGFloat = 48
         static let buttonIconSize: CGFloat = 19
     }
@@ -76,8 +79,8 @@ struct MealBudgetWidgetView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
                 Text("Coverflex")
-                    .font(.system(size: Layout.headerFontSize, weight: .medium))
-                    .foregroundStyle(Color.primary.opacity(0.56))
+                    .font(Layout.headerFont)
+                    .foregroundStyle(labelColor)
                 Spacer(minLength: 4)
                 Image(systemName: "fork.knife")
                     .font(.system(size: 10, weight: .bold))
@@ -95,10 +98,10 @@ struct MealBudgetWidgetView: View {
             HStack(alignment: .center) {
                 Button(intent: RefreshMealBudgetIntent()) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: Layout.buttonIconSize, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: Layout.buttonIconSize, weight: .bold))
+                        .foregroundStyle(amountColor)
                         .frame(width: Layout.buttonSize, height: Layout.buttonSize)
-                        .background(Circle().fill(.fill.tertiary))
+                        .background(Circle().fill(buttonFill))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh meal budget")
@@ -107,7 +110,7 @@ struct MealBudgetWidgetView: View {
 
                 if let fetchedAt = snapshot.fetchedAt {
                     Text(Self.updatedLabel(fetchedAt))
-                        .font(.system(size: 12, weight: .medium))
+                        .font(Layout.smallFont)
                         .foregroundStyle(Color.primary.opacity(0.4))
                 }
             }
@@ -121,13 +124,13 @@ struct MealBudgetWidgetView: View {
         if let cents = snapshot.balanceCents {
             AmountText(
                 amount: BudgetFormatting.format(cents: cents),
-                wholeSize: Layout.wholeFontSize,
-                restSize: Layout.restFontSize
+                wholeFont: Layout.wholeFont,
+                restFont: Layout.restFont
             )
-            .foregroundStyle(snapshot.needsSignIn ? .secondary : .primary)
+            .foregroundStyle(snapshot.needsSignIn ? labelColor : amountColor)
             .invalidatableContent()
         } else {
-            Text("—").font(.system(size: Layout.wholeFontSize, weight: .bold))
+            Text("—").font(Layout.wholeFont)
         }
     }
 
@@ -135,15 +138,28 @@ struct MealBudgetWidgetView: View {
         switch snapshot.problem {
         case .signInRequired:
             Label("Tap to sign in", systemImage: "person.crop.circle.badge.exclamationmark")
-                .font(.system(size: 12, weight: .medium))
+                .font(Layout.smallFont)
                 .foregroundStyle(.red)
         case .fetchFailed:
             Label("Update failed", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 12, weight: .medium))
+                .font(Layout.smallFont)
                 .foregroundStyle(.orange)
         case nil:
             EmptyView()
         }
+    }
+
+    // Light mode colors from the Revolut widget. Dark mode keeps the system colors.
+    private var labelColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.56) : Color(red: 113 / 255, green: 113 / 255, blue: 115 / 255)
+    }
+
+    private var amountColor: Color {
+        colorScheme == .dark ? .white : Color(red: 25 / 255, green: 28 / 255, blue: 31 / 255)
+    }
+
+    private var buttonFill: AnyShapeStyle {
+        colorScheme == .dark ? AnyShapeStyle(.fill.tertiary) : AnyShapeStyle(Color(white: 247 / 255))
     }
 
     /// Time for today, day and month for older values.

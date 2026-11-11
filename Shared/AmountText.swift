@@ -4,13 +4,13 @@ import SwiftUI
 /// Amount with the whole part large and bold, and the rest smaller. Shared look with the widget.
 struct AmountText: View {
     let amount: FormattedAmount
-    let wholeSize: CGFloat
-    let restSize: CGFloat
+    let wholeFont: Font
+    let restFont: Font
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text(amount.whole).font(.system(size: wholeSize, weight: .bold))
-            Text(amount.rest).font(.system(size: restSize, weight: .regular))
+            Text(amount.whole).font(wholeFont)
+            Text(amount.rest).font(restFont)
         }
         .lineLimit(1)
         .minimumScaleFactor(0.5)

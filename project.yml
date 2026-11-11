@@ -75,3 +75,6 @@ targets:
         CFBundleDisplayName: Coverflex Budget
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        # Inter 4.1, SIL Open Font License (Widget/Fonts/Inter-LICENSE.txt).
+        UIAppFonts:
+          - InterVariable.ttf
