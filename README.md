@@ -38,6 +38,7 @@ flowchart LR
 
 The widget layout copies the Revolut balance widget. See [docs/widget-design.md](docs/widget-design.md)
 for the measured values and `scripts/compare-widget.swift`, which measures widgets in a screenshot.
+After design changes, update the README image with `swift scripts/render-widget-preview.swift`.
 
 ## Build
 
