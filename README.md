@@ -1,5 +1,7 @@
 # Coverflex Budget
 
+![Small widget: light mode, dark mode, and sign-in required](docs/images/widget.png)
+
 iOS app and Home Screen widget that show the Coverflex meal card balance.
 
 - **App**: sign in with email, password, and OTP code. After the OTP, the app trusts the device
