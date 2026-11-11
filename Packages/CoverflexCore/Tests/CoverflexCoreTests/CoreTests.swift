@@ -28,6 +28,21 @@ import Testing
         }
     }
 
+    @Test(arguments: [429, 500, 503])
+    func firstStepTemporaryHTTPErrorThrows(status: Int) async {
+        let transport = FakeTransport(["POST /api/employee/sessions": [FakeResponse(status: status, json: "busy")]])
+        await #expect(throws: CoverflexError.http(status: status, body: "busy")) {
+            try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p", userAgentToken: nil)
+        }
+    }
+
+    @Test(arguments: [400, 401, 403])
+    func firstStepClientErrorAsksForOTP(status: Int) async throws {
+        let transport = FakeTransport(["POST /api/employee/sessions": [FakeResponse(status: status, json: "{}")]])
+        let result = try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p", userAgentToken: nil)
+        #expect(result == .otpRequired)
+    }
+
     @Test func otpStepSendsCodeAndReturnsTokens() async throws {
         let transport = FakeTransport(["POST /api/employee/sessions": [FakeResponse(status: 200, json: tokensJSON)]])
         let tokens = try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p", otp: "123456")

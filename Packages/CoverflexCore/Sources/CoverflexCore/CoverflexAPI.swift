@@ -26,6 +26,16 @@ public enum CoverflexError: Error, Equatable, Sendable, LocalizedError {
         return false
     }
 
+    /// True when the request failed for a reason that a later retry can fix: network, 429, or 5xx.
+    /// Coverflex did not check the credentials, so it did not send an OTP code.
+    var isTemporary: Bool {
+        switch self {
+        case .network: true
+        case let .http(status, _): status == 429 || (500..<600).contains(status)
+        case .unexpectedResponse: false
+        }
+    }
+
     /// True when the server rejected the credentials or token.
     var isUnauthorized: Bool {
         if case let .http(status, _) = self { return status == 401 || status == 403 }
@@ -70,10 +80,11 @@ public struct CoverflexAPI: Sendable {
         body["user_agent_token"] = userAgentToken
         do {
             return .signedIn(try await decode(AuthTokens.self, from: makeRequest("employee/sessions", method: "POST", body: body)))
-        } catch .network(let message) {
-            throw .network(message)
+        } catch let error where error.isTemporary {
+            throw error
         } catch {
-            // Same behavior as bin/coverflex-uat.ts: any other failure means "now ask for the OTP".
+            // Same behavior as run-gmc `bin/coverflex-uat.ts`: any other failure means "now ask for the OTP".
+            // The status Coverflex uses when it sends the code is not known, so this includes 4xx codes.
             return .otpRequired
         }
     }
