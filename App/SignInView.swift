@@ -99,6 +99,10 @@ struct SignInView: View {
                     Button("Cancel", role: .cancel) { model.isSignInPresented = false }
                 }
             }
+
+            Section {
+                ExportDebugInfoButton(model: model)
+            }
         }
         .onAppear { focus = email.isEmpty ? .email : .password }
     }

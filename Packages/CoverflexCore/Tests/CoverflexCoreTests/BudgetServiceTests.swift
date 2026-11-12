@@ -29,11 +29,18 @@ private func makeSession(access: String = validAccess, refresh: String = validRe
 private func makeService(
     _ transport: some HTTPTransport,
     session: StoredSession?,
-    snapshot: BudgetSnapshot = BudgetSnapshot()
+    snapshot: BudgetSnapshot = BudgetSnapshot(),
+    renewIssues: MemoryRenewIssueStore = MemoryRenewIssueStore()
 ) -> (BudgetService, MemoryStore<StoredSession>, MemorySnapshotStore) {
     let sessions = MemoryStore<StoredSession>(session)
     let snapshots = MemorySnapshotStore(snapshot)
-    let service = BudgetService(api: CoverflexAPI(transport: transport), sessions: sessions, snapshots: snapshots, now: { now })
+    let service = BudgetService(
+        api: CoverflexAPI(transport: transport),
+        sessions: sessions,
+        snapshots: snapshots,
+        renewIssues: renewIssues,
+        now: { now }
+    )
     return (service, sessions, snapshots)
 }
 
@@ -63,12 +70,29 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
     }
 }
 
+/// Answers every request with 200 and `response`, after it runs `hook`.
+private final class HookTransport: HTTPTransport, @unchecked Sendable {
+    let response: String
+    let hook: @Sendable () async -> Void
+
+    init(response: String, hook: @escaping @Sendable () async -> Void) {
+        self.response = response
+        self.hook = hook
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        await hook()
+        let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (Data(response.utf8), http)
+    }
+}
+
 @Suite struct RefreshTests {
     @Test func usesCachedAccessTokenWhenValid() async {
         let transport = FakeTransport([pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)]])
         let (service, _, _) = makeService(transport, session: makeSession())
 
-        let snapshot = await service.refresh()
+        let snapshot = await service.refresh(trigger: .app)
 
         #expect(snapshot == BudgetSnapshot(balanceCents: 325, fetchedAt: now, problem: nil))
         #expect(transport.paths() == [pocketsPath])
@@ -83,7 +107,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let session = makeSession(access: expiredAccess)
         let (service, sessions, _) = makeService(transport, session: session)
 
-        #expect(await service.refresh().balanceCents == 325)
+        #expect(await service.refresh(trigger: .app).balanceCents == 325)
         #expect(transport.paths() == [renewPath, pocketsPath])
         let renew = transport.requests.get()[0]
         #expect(renew.value(forHTTPHeaderField: "Authorization") == "Bearer \(validRefresh)")
@@ -99,7 +123,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         ])
         let (service, sessions, _) = makeService(transport, session: makeSession(access: expiredAccess))
 
-        let snapshot = await service.refresh()
+        let snapshot = await service.refresh(trigger: .app)
 
         #expect(snapshot.balanceCents == 325)
         #expect(snapshot.problem == nil)
@@ -109,6 +133,172 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         #expect(sessions.value.get()?.tokens == newTokens)
     }
 
+    @Test func unreadableRenewResponseLogsInWithSavedCredentials() async throws {
+        let transport = FakeTransport([
+            renewPath: [FakeResponse(status: 200, json: #"{"data":{}}"#)],
+            loginPath: [FakeResponse(status: 200, json: tokensJSON)],
+            pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)],
+        ])
+        let renewIssues = MemoryRenewIssueStore()
+        let (service, sessions, _) = makeService(transport, session: makeSession(access: expiredAccess), renewIssues: renewIssues)
+
+        let snapshot = await service.refresh(trigger: .widgetButton)
+
+        #expect(snapshot.balanceCents == 325)
+        #expect(snapshot.problem == nil)
+        #expect(transport.paths() == [renewPath, loginPath, pocketsPath])
+        #expect(sessions.value.get()?.tokens == newTokens)
+        let issue = try #require(renewIssues.load())
+        #expect(issue.date == now)
+        #expect(issue.trigger == .widgetButton)
+        #expect(issue.refreshTokenChangedDuringRequest == false)
+        #expect(issue.nextStep == "Logged in with the saved credentials.")
+        #expect(issue.error.contains("Response keys: [data]."))
+    }
+
+    @Test(arguments: [
+        FakeResponse(status: 401, json: "{}"),
+        FakeResponse(status: 200, json: #"{"otp_required":true}"#),
+        FakeResponse(status: 503, json: "{}"),
+    ])
+    func renewIssueRecordsFailedLoginFallback(login: FakeResponse) async throws {
+        let transport = FakeTransport([
+            renewPath: [FakeResponse(status: 401, json: "{}")],
+            loginPath: [login],
+        ])
+        let renewIssues = MemoryRenewIssueStore()
+        let (service, _, _) = makeService(transport, session: makeSession(access: expiredAccess), renewIssues: renewIssues)
+
+        #expect(await service.refresh(trigger: .app).problem != nil)
+        let issue = try #require(renewIssues.load())
+        #expect(issue.nextStep.hasPrefix("Login with the saved credentials failed: "))
+    }
+
+    @Test func temporaryRenewFailureRecordsIssue() async throws {
+        let transport = FakeTransport([renewPath: [FakeResponse(status: 500, json: "{}")]])
+        let renewIssues = MemoryRenewIssueStore()
+        let (service, _, _) = makeService(transport, session: makeSession(access: expiredAccess), renewIssues: renewIssues)
+
+        await service.refresh(trigger: .shortcut)
+
+        let issue = try #require(renewIssues.load())
+        #expect(issue.trigger == .shortcut)
+        #expect(issue.nextStep == "Kept the session for a later retry.")
+        #expect(issue.error == "Coverflex returned HTTP 500. Response keys: [].")
+    }
+
+    @Test func renewIssueRecordsTokensSavedByOtherProcess() async throws {
+        let sessions = MemoryStore<StoredSession>(makeSession(access: expiredAccess))
+        let renewIssues = MemoryRenewIssueStore()
+        let service = BudgetService(
+            api: CoverflexAPI(transport: RenewRaceTransport(sessions: sessions)),
+            sessions: sessions,
+            snapshots: MemorySnapshotStore(),
+            renewIssues: renewIssues,
+            now: { now }
+        )
+
+        #expect(await service.refresh(trigger: .app).balanceCents == 325)
+        let issue = try #require(renewIssues.load())
+        #expect(issue.refreshTokenChangedDuringRequest == true)
+        #expect(issue.nextStep == "Used the tokens that another process saved.")
+    }
+
+    @Test func newerStoredRenewIssueIsKept() async {
+        let newer = RenewIssue(date: now.addingTimeInterval(5), trigger: .widgetButton, error: "x", refreshTokenChangedDuringRequest: nil, nextStep: "y")
+        let renewIssues = MemoryRenewIssueStore(newer)
+        let transport = FakeTransport([renewPath: [FakeResponse(status: 500, json: "{}")]])
+        let (service, _, _) = makeService(transport, session: makeSession(access: expiredAccess), renewIssues: renewIssues)
+
+        await service.refresh(trigger: .app)
+
+        #expect(renewIssues.load() == newer)
+    }
+
+    /// The widget process records a renew issue while the app process waits for its own fetch.
+    /// The app then saves the snapshot it loaded before the issue. The issue must stay.
+    @Test func otherProcessRefreshDoesNotEraseRenewIssue() async throws {
+        let snapshots = MemorySnapshotStore()
+        let renewIssues = MemoryRenewIssueStore()
+        let widget = BudgetService(
+            api: CoverflexAPI(transport: FakeTransport([
+                renewPath: [FakeResponse(status: 200, json: "{}")],
+                loginPath: [FakeResponse(status: 200, json: tokensJSON)],
+                pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)],
+            ])),
+            sessions: MemoryStore(makeSession(access: expiredAccess)),
+            snapshots: snapshots,
+            renewIssues: renewIssues,
+            now: { now }
+        )
+        let app = BudgetService(
+            api: CoverflexAPI(transport: HookTransport(response: pocketsJSON) { await widget.refresh(trigger: .widgetButton) }),
+            sessions: MemoryStore(makeSession()),
+            snapshots: snapshots,
+            renewIssues: renewIssues,
+            now: { now }
+        )
+
+        #expect(await app.refresh(trigger: .app).balanceCents == 325)
+
+        #expect(try #require(renewIssues.load()).trigger == .widgetButton)
+        #expect(await app.lastRenewIssue?.trigger == .widgetButton)
+    }
+
+    @Test func renewErrorBodyStaysOutOfDiagnostics() async throws {
+        let secretBody = #"{"error":"bad","refresh_token":"SECRET-TOKEN","email":"SECRET@x.pt"}"#
+        let transport = FakeTransport([
+            renewPath: [FakeResponse(status: 401, json: secretBody)],
+            loginPath: [FakeResponse(status: 401, json: secretBody)],
+        ])
+        let renewIssues = MemoryRenewIssueStore()
+        let (service, _, _) = makeService(transport, session: makeSession(access: expiredAccess), renewIssues: renewIssues)
+
+        let snapshot = await service.refresh(trigger: .app)
+        let issue = try #require(renewIssues.load())
+        let report = DebugReport.text(
+            snapshot: snapshot,
+            lastRenewIssue: issue,
+            hasSession: false,
+            accessTokenExpiry: nil,
+            refreshTokenExpiry: nil,
+            environment: DebugReport.Environment(appVersion: "1", systemVersion: "iOS", generatedAt: now)
+        )
+
+        #expect(report.contains(#"Coverflex returned HTTP 401. Response keys: [email, error, refresh_token]. error: "bad""#))
+        #expect(!report.contains("SECRET"))
+    }
+
+    @Test func errorFieldValuesAreShownWithSecretsRedacted() {
+        let body = #"{"errors":{"detail":"Unauthorized","refresh_token":"SECRET","fields":[{"password":"SECRET"}]},"message":"Try again","token":"SECRET"}"#
+
+        let text = CoverflexAPI.describeResponse(Data(body.utf8))
+
+        #expect(text == #"Response keys: [errors, message, token]. errors: {"detail":"Unauthorized","fields":[{"password":"<redacted>"}],"refresh_token":"<redacted>"} message: "Try again""#)
+    }
+
+    @Test func unreadableLoginBodyStaysOutOfError() async {
+        let transport = FakeTransport([loginPath: [FakeResponse(status: 200, json: "SECRET-TOKEN")]])
+
+        await #expect(throws: CoverflexError.unexpectedResponse("Response is not a JSON object (12 bytes).")) {
+            try await CoverflexAPI(transport: transport).logIn(credentials)
+        }
+    }
+
+    @Test func decodeErrorListsResponseKeysWithoutValues() async {
+        let transport = FakeTransport([renewPath: [FakeResponse(status: 200, json: #"{"secret":"abc","access_token":"xyz"}"#)]])
+        let api = CoverflexAPI(transport: transport)
+
+        do {
+            _ = try await api.renew(refreshToken: validRefresh)
+            Issue.record("Expected an error")
+        } catch {
+            let message = error.localizedDescription
+            #expect(message.contains("Response keys: [access_token, secret]."))
+            #expect(!message.contains("xyz"))
+        }
+    }
+
     @Test func expiredRefreshTokenLogsInWithoutRenewRequest() async {
         let transport = FakeTransport([
             loginPath: [FakeResponse(status: 200, json: tokensJSON)],
@@ -116,7 +306,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         ])
         let (service, _, _) = makeService(transport, session: makeSession(access: expiredAccess, refresh: expiredRefresh))
 
-        #expect(await service.refresh().balanceCents == 325)
+        #expect(await service.refresh(trigger: .app).balanceCents == 325)
         #expect(transport.paths() == [loginPath, pocketsPath])
     }
 
@@ -127,7 +317,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         ])
         let (service, _, _) = makeService(transport, session: makeSession(access: "opaque-access", refresh: "opaque-refresh"))
 
-        #expect(await service.refresh().balanceCents == 325)
+        #expect(await service.refresh(trigger: .app).balanceCents == 325)
         #expect(transport.requests.get()[0].value(forHTTPHeaderField: "Authorization") == "Bearer opaque-refresh")
     }
 
@@ -137,7 +327,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let session = makeSession(access: expiredAccess)
         let (service, sessions, _) = makeService(transport, session: session)
 
-        expectFetchFailed(await service.refresh())
+        expectFetchFailed(await service.refresh(trigger: .app))
         #expect(transport.paths() == [renewPath])
         #expect(sessions.value.get() == session)
     }
@@ -150,7 +340,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let previous = BudgetSnapshot(balanceCents: 1000, fetchedAt: now.addingTimeInterval(-3600))
         let (service, sessions, _) = makeService(transport, session: makeSession(access: expiredAccess), snapshot: previous)
 
-        let snapshot = await service.refresh()
+        let snapshot = await service.refresh(trigger: .app)
 
         #expect(snapshot.needsSignIn)
         #expect(snapshot.balanceCents == 1000)
@@ -163,7 +353,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let transport = FakeTransport([loginPath: [FakeResponse(status: 200, json: #"{"otp_required":true}"#)]])
         let (service, sessions, _) = makeService(transport, session: makeSession(access: expiredAccess, refresh: expiredRefresh))
 
-        #expect(await service.refresh().needsSignIn)
+        #expect(await service.refresh(trigger: .app).needsSignIn)
         #expect(sessions.value.get() == nil)
     }
 
@@ -172,7 +362,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let session = makeSession(access: expiredAccess, refresh: expiredRefresh)
         let (service, sessions, _) = makeService(transport, session: session)
 
-        expectFetchFailed(await service.refresh())
+        expectFetchFailed(await service.refresh(trigger: .app))
         #expect(sessions.value.get() == session)
     }
 
@@ -181,7 +371,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let session = makeSession(access: expiredAccess, refresh: expiredRefresh)
         let (service, sessions, _) = makeService(transport, session: session)
 
-        expectFetchFailed(await service.refresh())
+        expectFetchFailed(await service.refresh(trigger: .app))
         #expect(sessions.value.get() == session)
     }
 
@@ -191,10 +381,11 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
             api: CoverflexAPI(transport: RenewRaceTransport(sessions: sessions)),
             sessions: sessions,
             snapshots: MemorySnapshotStore(),
+            renewIssues: MemoryRenewIssueStore(),
             now: { now }
         )
 
-        let snapshot = await service.refresh()
+        let snapshot = await service.refresh(trigger: .app)
 
         #expect(snapshot.balanceCents == 325)
         #expect(snapshot.problem == nil)
@@ -203,7 +394,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
 
     @Test func missingSessionRequiresSignIn() async {
         let (service, _, _) = makeService(FakeTransport([:]), session: nil)
-        #expect(await service.refresh().needsSignIn)
+        #expect(await service.refresh(trigger: .app).needsSignIn)
     }
 
     @Test func unreadableSessionKeepsBalanceAndSession() async {
@@ -212,7 +403,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let (service, sessions, _) = makeService(transport, session: session, snapshot: BudgetSnapshot(balanceCents: 500, fetchedAt: now))
         sessions.readError.set(KeychainError(status: errSecInteractionNotAllowed))
 
-        let snapshot = await service.refresh()
+        let snapshot = await service.refresh(trigger: .app)
 
         #expect(snapshot.balanceCents == 500)
         expectFetchFailed(snapshot)
@@ -227,7 +418,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let session = makeSession()
         let (service, sessions, _) = makeService(transport, session: session, snapshot: BudgetSnapshot(balanceCents: 500, fetchedAt: now))
 
-        let snapshot = await service.refresh()
+        let snapshot = await service.refresh(trigger: .app)
 
         #expect(snapshot.balanceCents == 500)
         expectFetchFailed(snapshot)
@@ -242,7 +433,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         ])
         let (service, _, _) = makeService(transport, session: makeSession())
 
-        #expect(await service.refresh().balanceCents == 325)
+        #expect(await service.refresh(trigger: .app).balanceCents == 325)
         #expect(transport.paths() == [pocketsPath, renewPath, pocketsPath])
     }
 
@@ -251,7 +442,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let recent = BudgetSnapshot(balanceCents: 700, fetchedAt: now.addingTimeInterval(-60))
         let (service, _, _) = makeService(transport, session: makeSession(), snapshot: recent)
 
-        #expect(await service.refreshIfOlder(than: 300) == recent)
+        #expect(await service.refreshIfOlder(than: 300, trigger: .app) == recent)
         #expect(transport.paths().isEmpty)
     }
 
@@ -259,7 +450,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let transport = FakeTransport([pocketsPath: [FakeResponse(status: 200, json: #"{"pockets":[]}"#)]])
         let (service, _, _) = makeService(transport, session: makeSession())
 
-        expectFetchFailed(await service.refresh())
+        expectFetchFailed(await service.refresh(trigger: .app))
     }
 }
 
@@ -275,10 +466,10 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         await service.observeJoins { joinContinuation.yield() }
         var joins = joinStream.makeAsyncIterator()
 
-        async let first = service.refresh()
+        async let first = service.refresh(trigger: .app)
         var arrivals = transport.arrivals.makeAsyncIterator()
         _ = await arrivals.next()
-        async let second = service.refresh()
+        async let second = service.refresh(trigger: .app)
         // Release the renew request only after the second call waits for the first refresh.
         // Earlier, the second call could start its own refresh.
         _ = await joins.next()
@@ -298,7 +489,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let transport = GatedTransport(fake)
         let (service, sessions, snapshots) = makeService(transport, session: makeSession(access: expiredAccess))
 
-        async let pending = service.refresh()
+        async let pending = service.refresh(trigger: .app)
         var arrivals = transport.arrivals.makeAsyncIterator()
         _ = await arrivals.next()
         await service.signOut()
@@ -318,7 +509,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         let transport = GatedTransport(fake)
         let (widgetService, sessions, snapshots) = makeService(transport, session: makeSession(access: expiredAccess))
 
-        async let pending = widgetService.refresh()
+        async let pending = widgetService.refresh(trigger: .app)
         var arrivals = transport.arrivals.makeAsyncIterator()
         _ = await arrivals.next()
         sessions.clear()
@@ -340,7 +531,7 @@ private final class RenewRaceTransport: HTTPTransport, @unchecked Sendable {
         )
         let newer = StoredSession(credentials: credentials, tokens: newTokens)
 
-        async let pending = widgetService.refresh()
+        async let pending = widgetService.refresh(trigger: .app)
         var arrivals = transport.arrivals.makeAsyncIterator()
         _ = await arrivals.next()
         sessions.save(newer)

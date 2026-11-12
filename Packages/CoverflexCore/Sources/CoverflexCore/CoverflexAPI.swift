@@ -1,8 +1,10 @@
 import Foundation
 
+/// Every message in this type is safe to show, log, and export: response bodies can hold tokens
+/// or account data, so the messages describe a body with `CoverflexAPI.describeResponse(_:)`.
 public enum CoverflexError: Error, Equatable, Sendable, LocalizedError {
-    /// Coverflex answered with a non-2xx status code.
-    case http(status: Int, body: String)
+    /// Coverflex answered with a non-2xx status code. `responseShape` comes from `CoverflexAPI.describeResponse(_:)`.
+    case http(status: Int, responseShape: String)
     /// The request did not complete (offline, timeout, TLS, ...).
     case network(String)
     /// Coverflex answered 2xx with a body the app cannot read.
@@ -10,8 +12,8 @@ public enum CoverflexError: Error, Equatable, Sendable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case let .http(status, body):
-            body.isEmpty ? "Coverflex returned HTTP \(status)." : "Coverflex returned HTTP \(status): \(body)"
+        case let .http(status, responseShape):
+            "Coverflex returned HTTP \(status). \(responseShape)"
         case let .network(message):
             message
         case let .unexpectedResponse(message):
@@ -34,6 +36,12 @@ public enum CoverflexError: Error, Equatable, Sendable, LocalizedError {
         case let .http(status, _): status == 429 || (500..<600).contains(status)
         case .unexpectedResponse: false
         }
+    }
+
+    /// True when Coverflex answered 2xx with a body the app cannot read.
+    var isUnexpectedResponse: Bool {
+        if case .unexpectedResponse = self { return true }
+        return false
     }
 
     /// True when the server rejected the credentials or token.
@@ -108,7 +116,7 @@ public struct CoverflexAPI: Sendable {
         let data = try await send(makeRequest("employee/sessions", method: "POST", body: body))
         if let tokens = try? JSONDecoder().decode(AuthTokens.self, from: data) { return .signedIn(tokens) }
         if (try? JSONSerialization.jsonObject(with: data)) is [String: Any] { return .otpRequired }
-        throw .unexpectedResponse(String(decoding: data.prefix(200), as: UTF8.self))
+        throw .unexpectedResponse(Self.describeResponse(data))
     }
 
     /// Marks this client as trusted and returns the token that lets later logins skip the OTP.
@@ -170,8 +178,51 @@ public struct CoverflexAPI: Sendable {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw .unexpectedResponse(String(describing: error))
+            throw .unexpectedResponse("\(error) \(Self.describeResponse(data))")
         }
+    }
+
+    /// Top-level keys whose values `describeResponse(_:)` shows. Error APIs use them for
+    /// human-readable messages, for example Phoenix `{"errors":{"detail":"Unauthorized"}}`.
+    static let errorKeys: Set<String> = ["code", "detail", "error", "errors", "message", "reason"]
+
+    /// Describes a body for errors, logs, and the debug report. Lists the top-level JSON keys and
+    /// shows only the values of `errorKeys`. Other values can hold tokens or account data.
+    /// Inside error values, keys that name secrets are redacted too.
+    static func describeResponse(_ data: Data) -> String {
+        if data.isEmpty { return "Response is empty." }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return "Response is not a JSON object (\(data.count) bytes)."
+        }
+        var text = "Response keys: [\(object.keys.sorted().joined(separator: ", "))]."
+        for key in object.keys.sorted() where errorKeys.contains(key) {
+            text += " \(key): \(compactJSON(redactingSecrets(in: object[key]!)))"
+        }
+        return text
+    }
+
+    /// Replaces values under keys such as `refresh_token` or `password` with "<redacted>".
+    private static func redactingSecrets(in value: Any) -> Any {
+        let secretWords = ["token", "password", "secret", "otp"]
+        switch value {
+        case let dictionary as [String: Any]:
+            return dictionary.reduce(into: [String: Any]()) { result, entry in
+                let isSecret = secretWords.contains { entry.key.lowercased().contains($0) }
+                result[entry.key] = isSecret ? "<redacted>" : redactingSecrets(in: entry.value)
+            }
+        case let array as [Any]:
+            return array.map(redactingSecrets)
+        default:
+            return value
+        }
+    }
+
+    /// One line of JSON with sorted keys, at most 300 characters.
+    private static func compactJSON(_ value: Any) -> String {
+        let options: JSONSerialization.WritingOptions = [.sortedKeys, .fragmentsAllowed, .withoutEscapingSlashes]
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: options) else { return "?" }
+        let text = String(decoding: data, as: UTF8.self)
+        return text.count > 300 ? text.prefix(300) + "…" : text
     }
 
     /// Sends the request and returns the body of a 2xx response.
@@ -188,8 +239,7 @@ public struct CoverflexAPI: Sendable {
             throw .unexpectedResponse("Not an HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let body = String(decoding: data.prefix(500), as: UTF8.self)
-            throw .http(status: http.statusCode, body: body)
+            throw .http(status: http.statusCode, responseShape: Self.describeResponse(data))
         }
         return data
     }

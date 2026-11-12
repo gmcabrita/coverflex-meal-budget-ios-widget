@@ -51,6 +51,7 @@ struct CoverflexBudgetShortcuts: AppShortcutsProvider {
 @Observable
 final class AppModel {
     var snapshot = BudgetSnapshot()
+    var lastRenewIssue: RenewIssue?
     var hasSession = false
     var accessTokenExpiry: Date?
     var refreshTokenExpiry: Date?
@@ -60,12 +61,32 @@ final class AppModel {
 
     var showsSignIn: Bool { !hasSession || snapshot.needsSignIn || isSignInPresented }
 
-    func load() async {
-        snapshot = await BudgetService.shared.snapshot
-        await loadTokenState()
+    /// Text for the "Export Debug Info" share button. Holds no tokens or credentials.
+    var debugReport: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return DebugReport.text(
+            snapshot: snapshot,
+            lastRenewIssue: lastRenewIssue,
+            hasSession: hasSession,
+            accessTokenExpiry: accessTokenExpiry,
+            refreshTokenExpiry: refreshTokenExpiry,
+            environment: DebugReport.Environment(
+                appVersion: "\(version) (\(build))",
+                systemVersion: "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+                generatedAt: .now
+            )
+        )
     }
 
-    private func loadTokenState() async {
+    func load() async {
+        snapshot = await BudgetService.shared.snapshot
+        await loadSessionState()
+    }
+
+    private func loadSessionState() async {
+        lastRenewIssue = await BudgetService.shared.lastRenewIssue
         hasSession = await BudgetService.shared.hasSession
         (accessTokenExpiry, refreshTokenExpiry) = await BudgetService.shared.tokenExpiry
     }
@@ -73,8 +94,8 @@ final class AppModel {
     func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
-        snapshot = await BudgetService.shared.refresh()
-        await loadTokenState()
+        snapshot = await BudgetService.shared.refresh(trigger: .app)
+        await loadSessionState()
         WidgetCenter.shared.reloadAllTimelines()
     }
 

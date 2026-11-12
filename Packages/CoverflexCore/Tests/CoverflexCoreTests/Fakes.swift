@@ -70,6 +70,13 @@ final class MemorySnapshotStore: SnapshotStore, @unchecked Sendable {
     func save(_ snapshot: BudgetSnapshot) { self.snapshot.set(snapshot) }
 }
 
+final class MemoryRenewIssueStore: RenewIssueStore, @unchecked Sendable {
+    let issue: Locked<RenewIssue?>
+    init(_ issue: RenewIssue? = nil) { self.issue = Locked(issue) }
+    func load() -> RenewIssue? { issue.get() }
+    func save(_ issue: RenewIssue) { self.issue.set(issue) }
+}
+
 /// Builds an unsigned JWT with the given expiry.
 func makeJWT(exp: Date) -> String {
     func encode(_ json: String) -> String {

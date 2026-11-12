@@ -43,6 +43,12 @@ public protocol SnapshotStore: Sendable {
     func save(_ snapshot: BudgetSnapshot)
 }
 
+/// Stores the last renew issue for the app's diagnostics.
+public protocol RenewIssueStore: Sendable {
+    func load() -> RenewIssue?
+    func save(_ issue: RenewIssue)
+}
+
 /// Keeps one value as JSON in the Keychain. The App Group identifier is the access group,
 /// so the app and the widget extension read the same item.
 public struct KeychainStore<Value: Codable & Sendable>: SecureStore {
@@ -136,6 +142,29 @@ public struct AppGroupSnapshotStore: SnapshotStore {
 
     public func save(_ snapshot: BudgetSnapshot) {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: Self.key)
+    }
+}
+
+/// Keeps the last renew issue as JSON in the App Group `UserDefaults`, apart from the snapshot,
+/// so a snapshot save in another process cannot erase it.
+public struct AppGroupRenewIssueStore: RenewIssueStore {
+    private static let key = "lastRenewIssue"
+    private let suiteName: String
+
+    public init(suiteName: String = AppGroup.identifier) {
+        self.suiteName = suiteName
+    }
+
+    private var defaults: UserDefaults { UserDefaults(suiteName: suiteName) ?? .standard }
+
+    public func load() -> RenewIssue? {
+        guard let data = defaults.data(forKey: Self.key) else { return nil }
+        return try? JSONDecoder().decode(RenewIssue.self, from: data)
+    }
+
+    public func save(_ issue: RenewIssue) {
+        guard let data = try? JSONEncoder().encode(issue) else { return }
         defaults.set(data, forKey: Self.key)
     }
 }

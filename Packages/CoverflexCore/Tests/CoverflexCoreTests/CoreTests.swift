@@ -31,7 +31,7 @@ import Testing
     @Test(arguments: [429, 500, 503])
     func firstStepTemporaryHTTPErrorThrows(status: Int) async {
         let transport = FakeTransport(["POST /api/employee/sessions": [FakeResponse(status: status, json: "busy")]])
-        await #expect(throws: CoverflexError.http(status: status, body: "busy")) {
+        await #expect(throws: CoverflexError.http(status: status, responseShape: "Response is not a JSON object (4 bytes).")) {
             try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p", userAgentToken: nil)
         }
     }
@@ -54,7 +54,7 @@ import Testing
 
     @Test func otpStepRejectionThrowsHTTPError() async {
         let transport = FakeTransport(["POST /api/employee/sessions": [FakeResponse(status: 401, json: "bad otp")]])
-        await #expect(throws: CoverflexError.http(status: 401, body: "bad otp")) {
+        await #expect(throws: CoverflexError.http(status: 401, responseShape: "Response is not a JSON object (7 bytes).")) {
             try await CoverflexAPI(transport: transport).signIn(email: "e", password: "p", otp: "000000")
         }
     }

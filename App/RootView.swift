@@ -23,6 +23,17 @@ struct RootView: View {
     }
 }
 
+/// Shares a plain text report for diagnosis. The report holds no tokens or credentials.
+struct ExportDebugInfoButton: View {
+    let model: AppModel
+
+    var body: some View {
+        ShareLink(item: model.debugReport, subject: Text("Coverflex Budget debug info")) {
+            Label("Export Debug Info", systemImage: "ladybug")
+        }
+    }
+}
+
 struct BudgetView: View {
     let model: AppModel
 
@@ -72,6 +83,20 @@ struct BudgetView: View {
             Section("Session") {
                 LabeledContent("Access token expires", value: Self.label(model.accessTokenExpiry))
                 LabeledContent("Refresh token expires", value: Self.label(model.refreshTokenExpiry))
+            }
+
+            if let issue = model.lastRenewIssue {
+                Section("Last renew issue") {
+                    LabeledContent("Time", value: issue.date.formatted(date: .abbreviated, time: .standard))
+                    LabeledContent("Started by", value: issue.trigger.rawValue)
+                    LabeledContent("Refresh token changed", value: issue.refreshTokenChangedDuringRequest.map { $0 ? "Yes" : "No" } ?? "Unknown")
+                    LabeledContent("Next step", value: issue.nextStep)
+                    Text(issue.error).font(.footnote.monospaced()).textSelection(.enabled)
+                }
+            }
+
+            Section {
+                ExportDebugInfoButton(model: model)
             }
 
             Section {

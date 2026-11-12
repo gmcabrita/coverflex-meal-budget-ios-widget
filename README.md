@@ -18,6 +18,9 @@ iOS app and Home Screen widget that show the Coverflex meal card balance.
   - Tap opens the Coverflex app (through `https://my.coverflex.com`, a Coverflex universal link).
   - When the session expired, tap opens this app at the sign-in form.
 - **Shortcuts**: "Refresh Meal Budget" action. Updates the widget and returns the balance in euros. Fails when the session expired.
+- **Diagnostics**: the app shows the last failed renew request and has an "Export Debug Info" button.
+  The report and the `com.gmcabrita.CoverflexBudget` log (category `renew`) show the top-level JSON keys of response
+  bodies and only the values of error fields (`error`, `errors`, `message`, ...), with secret fields redacted.
 
 ```mermaid
 flowchart LR
@@ -28,12 +31,12 @@ flowchart LR
   end
   subgraph Widget extension
     Timeline[Timeline provider, every 30 min] --> Service2[BudgetService]
-    Button[Refresh button] --> Intent2[RefreshMealBudgetIntent]
+    Button[Refresh button] --> Intent2[RefreshMealBudgetWidgetIntent]
     Intent2 --> Service2
   end
   Service1 & Service2 -->|renew, login, pockets| API[(menhir-api.coverflex.com)]
   Service1 & Service2 <--> KC[(Keychain: StoredSession<br/>credentials + tokens<br/>App Group access group)]
-  Service1 & Service2 <--> UD[(App Group UserDefaults:<br/>BudgetSnapshot)]
+  Service1 & Service2 <--> UD[(App Group UserDefaults:<br/>BudgetSnapshot, RenewIssue)]
   UD --> View[Widget view]
   View -->|tap, OK| App1[coverflexbudget://open-coverflex → Coverflex app]
   View -->|tap, sign-in needed| App2[coverflexbudget://sign-in → sign-in form]

@@ -50,7 +50,7 @@ struct MealBudgetProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping @Sendable (Timeline<MealBudgetEntry>) -> Void) {
         Task {
-            let snapshot = await BudgetService.shared.refreshIfOlder(than: Self.reuseInterval)
+            let snapshot = await BudgetService.shared.refreshIfOlder(than: Self.reuseInterval, trigger: .widgetTimeline)
             let entry = MealBudgetEntry(date: .now, snapshot: snapshot)
             completion(Timeline(entries: [entry], policy: .after(.now.addingTimeInterval(Self.reloadInterval))))
         }
@@ -97,7 +97,7 @@ struct MealBudgetWidgetView: View {
             Spacer(minLength: 0)
 
             HStack(alignment: .center) {
-                Button(intent: RefreshMealBudgetIntent()) {
+                Button(intent: RefreshMealBudgetWidgetIntent()) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: Layout.buttonIconSize, weight: .bold))
                         .foregroundStyle(amountColor)

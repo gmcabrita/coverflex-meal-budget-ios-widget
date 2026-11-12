@@ -71,11 +71,51 @@ public struct BudgetSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+/// What started a refresh. Shortcuts and the app UI run in the same process, so the process
+/// name alone cannot tell them apart.
+public enum RefreshTrigger: String, Codable, Equatable, Sendable {
+    case app
+    case signIn
+    case widgetTimeline
+    case widgetButton
+    case shortcut
+}
+
+/// Details of a failed `POST /employee/sessions/renew`, for diagnosis in the app and in Console.app.
+/// Holds no token values. Stored apart from `BudgetSnapshot`: the login fallback hides renew
+/// failures from `BudgetSnapshot.problem`, and a refresh in another process must not erase it.
+public struct RenewIssue: Codable, Equatable, Sendable {
+    public var date: Date
+    public var trigger: RefreshTrigger
+    /// The error, with the body described by `CoverflexAPI.describeResponse(_:)`.
+    public var error: String
+    /// True when the stored refresh token changed while the request ran: another process renewed first.
+    /// Nil when the stored session could not be read or was replaced.
+    public var refreshTokenChangedDuringRequest: Bool?
+    /// What the refresh did after the failure, and the result.
+    public var nextStep: String
+
+    public init(date: Date, trigger: RefreshTrigger, error: String, refreshTokenChangedDuringRequest: Bool?, nextStep: String) {
+        self.date = date
+        self.trigger = trigger
+        self.error = error
+        self.refreshTokenChangedDuringRequest = refreshTokenChangedDuringRequest
+        self.nextStep = nextStep
+    }
+}
+
 public enum BudgetProblem: Error, Codable, Equatable, Sendable {
     /// No refresh token, or Coverflex rejected it. The text says why, for display in the app.
     case signInRequired(String)
     /// Network error, server error, or an unexpected response.
     case fetchFailed(String)
+
+    public var message: String {
+        switch self {
+        case let .signInRequired(reason): reason
+        case let .fetchFailed(message): message
+        }
+    }
 }
 
 /// Response of `GET /employee/pockets`. Only the fields the app uses.
