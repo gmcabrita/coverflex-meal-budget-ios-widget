@@ -13,6 +13,8 @@ private let newRefresh = makeJWT(exp: now.addingTimeInterval(86400 * 60))
 
 private let pocketsJSON = #"{"pockets":[{"type":"benefits","balance":{"amount":5000}},{"type":"meals","balance":{"amount":325}}]}"#
 private let tokensJSON = "{\"token\":\"\(newAccess)\",\"refresh_token\":\"\(newRefresh)\"}"
+/// The renew endpoint wraps the tokens in `data` and names the access token `access_token`.
+private let renewJSON = "{\"data\":{\"access_token\":\"\(newAccess)\",\"refresh_token\":\"\(newRefresh)\"}}"
 private let newTokens = AuthTokens(token: newAccess, refreshToken: newRefresh)
 
 private let renewPath = "POST /api/employee/sessions/renew"
@@ -101,7 +103,7 @@ private final class HookTransport: HTTPTransport, @unchecked Sendable {
 
     @Test func renewsExpiredAccessTokenAndKeepsSessionID() async {
         let transport = FakeTransport([
-            renewPath: [FakeResponse(status: 200, json: tokensJSON)],
+            renewPath: [FakeResponse(status: 200, json: renewJSON)],
             pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)],
         ])
         let session = makeSession(access: expiredAccess)
@@ -153,7 +155,7 @@ private final class HookTransport: HTTPTransport, @unchecked Sendable {
         #expect(issue.trigger == .widgetButton)
         #expect(issue.refreshTokenChangedDuringRequest == false)
         #expect(issue.nextStep == "Logged in with the saved credentials.")
-        #expect(issue.error.contains("Response keys: [data]."))
+        #expect(issue.error.contains("Response keys: [data]. data keys: []."))
     }
 
     @Test(arguments: [
@@ -312,7 +314,7 @@ private final class HookTransport: HTTPTransport, @unchecked Sendable {
 
     @Test func refreshTokenWithoutReadableExpiryIsSentToServer() async {
         let transport = FakeTransport([
-            renewPath: [FakeResponse(status: 200, json: tokensJSON)],
+            renewPath: [FakeResponse(status: 200, json: renewJSON)],
             pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)],
         ])
         let (service, _, _) = makeService(transport, session: makeSession(access: "opaque-access", refresh: "opaque-refresh"))
@@ -429,7 +431,7 @@ private final class HookTransport: HTTPTransport, @unchecked Sendable {
     @Test func revokedAccessTokenRenewsOnceAndRetries() async {
         let transport = FakeTransport([
             pocketsPath: [FakeResponse(status: 401, json: "{}"), FakeResponse(status: 200, json: pocketsJSON)],
-            renewPath: [FakeResponse(status: 200, json: tokensJSON)],
+            renewPath: [FakeResponse(status: 200, json: renewJSON)],
         ])
         let (service, _, _) = makeService(transport, session: makeSession())
 
@@ -457,7 +459,7 @@ private final class HookTransport: HTTPTransport, @unchecked Sendable {
 @Suite struct SessionRaceTests {
     @Test func concurrentRefreshesShareOneRenewal() async {
         let fake = FakeTransport([
-            renewPath: [FakeResponse(status: 200, json: tokensJSON), FakeResponse(status: 401, json: "{}")],
+            renewPath: [FakeResponse(status: 200, json: renewJSON), FakeResponse(status: 401, json: "{}")],
             pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)],
         ])
         let transport = GatedTransport(fake)
@@ -483,7 +485,7 @@ private final class HookTransport: HTTPTransport, @unchecked Sendable {
 
     @Test func signOutDuringRenewalDoesNotRestoreSession() async {
         let fake = FakeTransport([
-            renewPath: [FakeResponse(status: 200, json: tokensJSON)],
+            renewPath: [FakeResponse(status: 200, json: renewJSON)],
             pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)],
         ])
         let transport = GatedTransport(fake)
@@ -503,7 +505,7 @@ private final class HookTransport: HTTPTransport, @unchecked Sendable {
     /// The app signs out while the widget process renews. The widget's service never sees `signOut()`.
     @Test func otherProcessSignOutDuringRenewalDoesNotRestoreSession() async {
         let fake = FakeTransport([
-            renewPath: [FakeResponse(status: 200, json: tokensJSON)],
+            renewPath: [FakeResponse(status: 200, json: renewJSON)],
             pocketsPath: [FakeResponse(status: 200, json: pocketsJSON)],
         ])
         let transport = GatedTransport(fake)

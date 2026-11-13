@@ -132,11 +132,26 @@ public struct CoverflexAPI: Sendable {
     }
 
     /// Exchanges a refresh token for a new access token and a new refresh token.
+    /// Unlike `employee/sessions`, this endpoint wraps the tokens in `data` and names the access
+    /// token `access_token`. Live response (HTTP 200, November 2026):
+    /// `{"data":{"access_token":"…","refresh_token":"…"}}`
     public func renew(refreshToken: String) async throws(CoverflexError) -> AuthTokens {
+        struct Response: Decodable {
+            struct Tokens: Decodable {
+                let accessToken: String
+                let refreshToken: String
+                enum CodingKeys: String, CodingKey {
+                    case accessToken = "access_token"
+                    case refreshToken = "refresh_token"
+                }
+            }
+            let data: Tokens
+        }
         var request = makeRequest("employee/sessions/renew", method: "POST", bearer: refreshToken)
         // The web app sends this header without a body. Same as run-gmc: https://github.com/gmcabrita/run-gmc/tree/49b8808/src/coverflex/util
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        return try await decode(AuthTokens.self, from: request)
+        let tokens = try await decode(Response.self, from: request).data
+        return AuthTokens(token: tokens.accessToken, refreshToken: tokens.refreshToken)
     }
 
     /// Balance of the meal pocket in cents.
@@ -189,12 +204,16 @@ public struct CoverflexAPI: Sendable {
     /// Describes a body for errors, logs, and the debug report. Lists the top-level JSON keys and
     /// shows only the values of `errorKeys`. Other values can hold tokens or account data.
     /// Inside error values, keys that name secrets are redacted too.
+    /// For a `data` object, it lists the keys inside it, because Coverflex uses `data` as an envelope.
     static func describeResponse(_ data: Data) -> String {
         if data.isEmpty { return "Response is empty." }
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return "Response is not a JSON object (\(data.count) bytes)."
         }
         var text = "Response keys: [\(object.keys.sorted().joined(separator: ", "))]."
+        if let envelope = object["data"] as? [String: Any] {
+            text += " data keys: [\(envelope.keys.sorted().joined(separator: ", "))]."
+        }
         for key in object.keys.sorted() where errorKeys.contains(key) {
             text += " \(key): \(compactJSON(redactingSecrets(in: object[key]!)))"
         }
